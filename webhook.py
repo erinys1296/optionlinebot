@@ -1003,7 +1003,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                         paper_bgcolor="rgb(20,20,20)",   # 外框背景更深
                         font=dict(color="white"),        # 改字體顏色成白色
                         
-                        hhoverlabel=dict(
+                        hoverlabel=dict(
                             align='left',
                             bgcolor='rgba(50,50,50,0.8)',
                             font=dict(color='white')
