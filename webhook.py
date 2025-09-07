@@ -583,7 +583,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
 
 
 
-        current_date = datetime.combine(df_ts.iloc[0]['ts'].date(), time(0, 0, 0))
+        current_date = datetime.combine(df_ts.iloc[0]['ts'].date(), dtime(0, 0, 0))
 
         while current_date.date() <= df_ts['ts'].iloc[-1].date():
             for start_time in start_times:
