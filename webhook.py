@@ -93,7 +93,7 @@ def on_message(event: MessageEvent):
     reply(
         "嗨！\n"
         "若要接收定時通知，請輸入：\n"
-        f"「註冊 {REGISTER_CODE}」\n"
+        f"「註冊 驗證碼」\n"
         "取消請輸入：「取消訂閱」\n"
         "查詢請輸入：「狀態」"
     )
