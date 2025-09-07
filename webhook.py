@@ -1,19 +1,23 @@
 # -*- coding: utf-8 -*-
 import os, json, threading, time, logging
 from pathlib import Path
-from typing import Set, List
+from typing import Set, List, Optional
 
-from flask import Flask, request, abort, jsonify
+from flask import Flask, request, abort, jsonify, send_from_directory, make_response
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
 
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
-REGISTER_CODE = os.environ.get("REGISTER_CODE", "abc123")   # 使用者註冊用驗證碼
-CRON_KEY = os.environ.get("CRON_KEY")                       # Admin/Cron 金鑰（必填）
+REGISTER_CODE = os.environ.get("REGISTER_CODE", "abc123")     # 註冊驗證碼
+CRON_KEY = os.environ.get("CRON_KEY")                         # Admin/Cron 金鑰（必填）
 WHITE_LIST_FILE = Path(os.environ.get("WHITELIST_PATH", "whitelist.json"))
+
+# 圖片儲存與公開網址（建議有 Persistent Disk）
+IMAGES_DIR = Path(os.environ.get("IMAGES_DIR", "/var/data/images"))
+PUBLIC_BASE = os.environ.get("PUBLIC_BASE")  # 例如 https://your-service.onrender.com
 
 # ========= App / SDK =========
 app = Flask(__name__)
@@ -23,9 +27,10 @@ logger = logging.getLogger("webhook")
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# --- Persistent Disk 初始化與一次性搬遷 ---
-DEFAULT_WHITE_LIST_FILE = Path("whitelist.json")  # 容器本地舊路徑
+# --- Persistent Disk 初始化與一次性搬遷（白名單） ---
+DEFAULT_WHITE_LIST_FILE = Path("whitelist.json")
 WHITE_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 def _bootstrap_storage():
     """若掛了磁碟但檔案不存在，且舊檔存在，則把舊檔搬到新位置；否則建立空白檔。"""
@@ -59,7 +64,7 @@ def _load_whitelist() -> Set[str]:
         return set()
 
 def _save_whitelist(ids: Set[str]):
-    """原子寫檔：先寫暫存檔，再 os.replace 覆蓋，避免中途中斷導致 JSON 壞掉。"""
+    """原子寫檔，避免中斷造成 JSON 壞掉。"""
     tmp = WHITE_LIST_FILE.with_suffix(".json.tmp")
     data = json.dumps(sorted(list(ids)), ensure_ascii=False, indent=2)
     with _lock:
@@ -74,6 +79,30 @@ def _require_key():
     if not CRON_KEY or key != CRON_KEY:
         abort(401)
 
+# ========= 圖片：生成 & 提供 =========
+def generate_plot_png(filename: str = "latest.png") -> Path:
+    """
+    生成一張 Plotly PNG 到 IMAGES_DIR/filename，回傳該檔案 Path。
+    你可以把這裡替換成自己的資料與圖表邏輯。
+    """
+    from plotly import express as px  # 延遲載入，減少冷啟動
+    # Demo：簡單折線圖；請改成你的實際圖表
+    fig = px.line(x=[1,2,3,4], y=[3,1,4,2], title="Daily Chart")
+    out = IMAGES_DIR / filename
+    fig.write_image(str(out), format="png", scale=2)  # 需要 kaleido
+    return out
+
+@app.route("/images/<path:fname>", methods=["GET"])
+def serve_image(fname):
+    """從 Persistent Disk 回傳圖片（/images/固定路徑）"""
+    safe = Path(fname).name  # 防止目錄跳脫
+    full = IMAGES_DIR / safe
+    if not full.exists():
+        abort(404)
+    resp = make_response(send_from_directory(IMAGES_DIR, safe, mimetype="image/png"))
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
+
 # ========= 共用推播 =========
 def _push_to_uids(uids: List[str], msg: str) -> int:
     sent = 0
@@ -86,11 +115,33 @@ def _push_to_uids(uids: List[str], msg: str) -> int:
             sent += 1
     return sent
 
+def _push_image_to_uids(uids: List[str], img_url: str) -> int:
+    sent = 0
+    for uid in uids:
+        try:
+            line_bot_api.push_message(uid, ImageSendMessage(
+                original_content_url=img_url,
+                preview_image_url=img_url
+            ))
+        except Exception as e:
+            logger.warning("push image fail uid=%s err=%s", uid, e)
+        else:
+            sent += 1
+    return sent
+
 def _push_to_whitelist(msg: str) -> int:
     wl = sorted(list(_load_whitelist()))
     return _push_to_uids(wl, msg)
 
-# ========= 基本健康檢查 =========
+def _push_image_to_whitelist(img_url: str) -> int:
+    wl = sorted(list(_load_whitelist()))
+    return _push_image_to_uids(wl, img_url)
+
+def _public_base() -> str:
+    # 若未設定 PUBLIC_BASE，就用 request.host_url
+    return (PUBLIC_BASE or request.host_url).rstrip("/")
+
+# ========= 健康檢查 =========
 @app.route("/health")
 def health():
     return "OK"
@@ -109,6 +160,7 @@ def callback():
     except InvalidSignatureError:
         abort(400)
     return "OK"
+
 
 @handler.add(MessageEvent, message=TextMessage)
 def on_message(event: MessageEvent):
@@ -160,10 +212,29 @@ def on_message(event: MessageEvent):
         "查詢請輸入：「狀態」"
     )
 
-# ========= 定時推播（給 Render Cron Job 用） =========
+# ========= 兩段式：先生圖 → 再推圖 =========
+@app.route("/cron/genplot", methods=["POST", "GET"])
+def cron_genplot():
+    _require_key()
+    filename = request.args.get("filename") or "latest.png"
+    p = generate_plot_png(filename)
+    img_url = f"{_public_base()}/images/{p.name}"
+    return jsonify(ok=True, filename=p.name, path=str(p), url=img_url)
+
 @app.route("/cron/push", methods=["POST", "GET"])
 def cron_push():
     _require_key()
+    mode = (request.args.get("mode") or "text").lower()   # 'text' | 'image'
+    if mode == "image":
+        filename = request.args.get("filename") or "latest.png"
+        p = IMAGES_DIR / filename
+        if not p.exists():
+            abort(404)  # 沒先生圖就推，直接 404（也可改成自動 gen）
+        img_url = f"{_public_base()}/images/{p.name}"
+        count = _push_image_to_whitelist(img_url)
+        return f"OK, pushed image to {count} subscribers. url={img_url}"
+
+    # 預設：純文字
     msg = request.args.get("message") or "⏰ 固定時間提醒來囉！"
     count = _push_to_whitelist(msg)
     return f"OK, pushed to {count} subscribers"
@@ -227,6 +298,8 @@ def admin_env():
         register_code=REGISTER_CODE,
         cron_key_set=bool(CRON_KEY),
         whitelist_path=str(WHITE_LIST_FILE),
+        images_dir=str(IMAGES_DIR),
+        public_base=PUBLIC_BASE or "(auto from request)",
         token_masked=masked(CHANNEL_ACCESS_TOKEN),
         secret_masked=masked(CHANNEL_SECRET),
     )
