@@ -8,6 +8,12 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
 
+import sqlite3, requests, pandas as pd, numpy as np, io, time, os
+from datetime import datetime, timedelta, time as dtime
+from pathlib import Path
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
@@ -18,6 +24,37 @@ WHITE_LIST_FILE = Path(os.environ.get("WHITELIST_PATH", "whitelist.json"))
 # 圖片儲存與公開網址（建議有 Persistent Disk）
 IMAGES_DIR = Path(os.environ.get("IMAGES_DIR", "/var/data/images"))
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE")  # 例如 https://your-service.onrender.com
+
+# ===== SQLite 來源與快取（請到 Render 環境變數設定）=====
+EQUITY_SQLITE_URL   = os.environ.get("EQUITY_SQLITE_URL")   # 主圖資料.sqlite3 的 RAW 連結
+FUTURES_SQLITE_URL  = os.environ.get("FUTURES_SQLITE_URL")  # FutureData.sqlite3 的 RAW 連結
+EQUITY_SQLITE_CACHE = Path(os.environ.get("EQUITY_SQLITE_CACHE", "/var/data/cache/equity.sqlite"))
+FUTURES_SQLITE_CACHE= Path(os.environ.get("FUTURES_SQLITE_CACHE","/var/data/cache/future.sqlite"))
+SQLITE_TTL_SEC      = int(os.environ.get("SQLITE_TTL_SEC", "900"))  # 15分鐘快取
+GITHUB_TOKEN        = os.environ.get("GITHUB_TOKEN")  # 私有 repo 才需要，可留空
+
+# （若你的資料庫內表名與我預設不同，可用這三個環境變數覆蓋；不填就用你 SQL 寫的原名）
+EQ_COST_TABLE      = os.environ.get("EQ_COST_TABLE", "cost")
+EQ_LIMIT_TABLE     = os.environ.get("EQ_LIMIT_TABLE", "limit")
+FUT_HOURLY_TABLE   = os.environ.get("FUT_HOURLY_TABLE", "futurehourly")
+
+# 簡單配色
+increasing_color = 'rgb(255, 0, 0)'
+decreasing_color = 'rgb(0, 0, 245)'
+
+red_color = 'rgba(255, 0, 0, 0.1)'
+green_color = 'rgba(30, 144, 255,0.1)'
+
+no_color = 'rgba(256, 256, 256,0)'
+
+blue_color = 'rgb(30, 144, 255)'
+red_color_full = 'rgb(255, 0, 0)'
+
+orange_color = 'rgb(245, 152, 59)'
+green_color_full = 'rgb(52, 186, 7)'
+
+gray_color = 'rgb(188, 194, 192)'
+black_color = 'rgb(0, 0, 0)'
 
 # ========= App / SDK =========
 app = Flask(__name__)
@@ -79,18 +116,379 @@ def _require_key():
     if not CRON_KEY or key != CRON_KEY:
         abort(401)
 
+# ========= SQLite 下載與快取 =========
+def _ensure_parent(p: Path):
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+def _download_to(path: Path, url: str):
+    """把 url 下載到 path（原子寫入，支援私有 repo Token）。"""
+    headers = {"User-Agent": "render-linebot"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+        headers["Accept"] = "application/vnd.github.raw"
+    _ensure_parent(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with requests.get(url, headers=headers, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with tmp.open("wb") as f:
+            for chunk in r.iter_content(8192):
+                if chunk:
+                    f.write(chunk)
+            f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, path)
+
+def _get_cached_sqlite(url: str, cache_path: Path) -> Path:
+    """TTL 內直接用快取；過期就重新下載。"""
+    if not url:
+        raise RuntimeError(f"missing SQLITE url for {cache_path}")
+    if cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < SQLITE_TTL_SEC:
+        return cache_path
+    _download_to(cache_path, url)
+    return cache_path
+
+def get_sqlite_connection(which: str) -> sqlite3.Connection:
+    """
+    which: 'equity' 或 'futures'
+    回傳 sqlite3.connect(...) 連線；呼叫方負責 con.close()
+    """
+    if which == "equity":
+        p = _get_cached_sqlite(EQUITY_SQLITE_URL, EQUITY_SQLITE_CACHE)
+    elif which == "futures":
+        p = _get_cached_sqlite(FUTURES_SQLITE_URL, FUTURES_SQLITE_CACHE)
+    else:
+        raise ValueError("which must be 'equity' or 'futures'")
+    return sqlite3.connect(str(p))
+
+
 # ========= 圖片：生成 & 提供 =========
 def generate_plot_png(filename: str = "latest.png") -> Path:
     """
-    生成一張 Plotly PNG 到 IMAGES_DIR/filename，回傳該檔案 Path。
-    你可以把這裡替換成自己的資料與圖表邏輯。
+    讀取：
+      - equity DB 的 {EQ_COST_TABLE}(Date, Cost)、{EQ_LIMIT_TABLE}(日期, 身份別, 上極限, 下極限)
+      - futures DB 的 {FUT_HOURLY_TABLE}(ts, Open, High, Low, Close, Volume)
+    產生雙列（60分/300分）的 Plotly 圖，輸出為 PNG。
     """
-    from plotly import express as px  # 延遲載入，減少冷啟動
-    # Demo：簡單折線圖；請改成你的實際圖表
-    fig = px.line(x=[1,2,3,4], y=[3,1,4,2], title="Daily Chart")
-    out = IMAGES_DIR / filename
-    fig.write_image(str(out), format="png", scale=2)  # 需要 kaleido
-    return out
+
+    # ---- 顏色（若外部有同名變數會用外部的）----
+    global red_color, green_color, increasing_color, decreasing_color, no_color
+    red_color        = locals().get("red_color",   "rgba(220, 53, 69, 0.9)")
+    green_color      = locals().get("green_color", "rgba(25, 135, 84, 0.9)")
+    increasing_color = locals().get("increasing_color", "rgba(13, 110, 253, 1.0)")
+    decreasing_color = locals().get("decreasing_color", "rgba(33, 37, 41, 1.0)")
+    no_color         = locals().get("no_color", "rgba(0,0,0,0)")
+
+    # ---- 目錄（若未定義 IMAGES_DIR，用預設）----
+    images_dir = globals().get("IMAGES_DIR", Path(os.environ.get("IMAGES_DIR", "/var/data/images")))
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- 表名（可由環境變數覆蓋）----
+    EQ_COST_TABLE     = os.environ.get("EQ_COST_TABLE", "cost")
+    EQ_LIMIT_TABLE    = os.environ.get("EQ_LIMIT_TABLE", "limit")
+    FUT_HOURLY_TABLE  = os.environ.get("FUT_HOURLY_TABLE", "futurehourly")
+
+    # ---- 連線 ----
+    con_eq = get_sqlite_connection("equity")
+    con_fu = get_sqlite_connection("futures")
+
+    try:
+        # =========================
+        # 1) 讀取 equity（cost / limit）
+        # =========================
+        cost_df = pd.read_sql(
+            f'SELECT DISTINCT Date AS 日期, Cost AS 外資成本 FROM "{EQ_COST_TABLE}"',
+            con_eq, parse_dates=['日期']
+        ).dropna()
+        cost_df["外資成本"] = cost_df["外資成本"].astype(int)
+
+        limit_df = pd.read_sql(
+            f'SELECT DISTINCT * FROM "{EQ_LIMIT_TABLE}"',
+            con_eq, parse_dates=['日期']
+        )
+        inves_limit  = limit_df[limit_df["身份別"] == "外資"][['日期','上極限','下極限']].copy()
+        dealer_limit = limit_df[limit_df["身份別"] == "自營商"][['日期','上極限','下極限']].copy()
+        inves_limit.columns  = ['日期',"外資上極限","外資下極限"]
+        dealer_limit.columns = ['日期',"自營商上極限","自營商下極限"]
+
+        # =========================
+        # 2) 讀取 futures（分時）
+        # =========================
+        FutureData = pd.read_sql(
+            f'SELECT DISTINCT * FROM "{FUT_HOURLY_TABLE}"',
+            con_fu, parse_dates=['ts'], index_col=['ts']
+        )
+        df_ts = FutureData.reset_index()
+
+        # ====== 60分彙整 ======
+        FutureData = FutureData.reset_index()
+        mask = (FutureData.ts.dt.hour < 14) & (FutureData.ts.dt.hour >= 8)
+        FutureData.loc[mask, 'ts'] = FutureData.loc[mask].ts - timedelta(minutes=46)
+        FutureData.index = FutureData.ts
+
+        FutureData["date"] = pd.to_datetime(FutureData.index)
+        FutureData["hourdate"] = FutureData.date.dt.date.astype(str) + FutureData.date.dt.hour.astype(str)
+        FutureData = FutureData.dropna(subset=['Open'])
+        FutureData.index = FutureData['date']
+
+        tempdf = FutureData[['hourdate','Volume']].copy()
+        Final60Tdata = (
+            FutureData.groupby('hourdate').max()[["High"]]
+            .join(FutureData.groupby('hourdate').min()[["Low"]])
+            .join(tempdf.groupby('hourdate').sum()[["Volume"]])
+        )
+        # 開/收
+        tempopen  = FutureData.loc[FutureData.groupby('hourdate').min()['date'].values][["Open","date"]]
+        tempopen.index = FutureData.loc[FutureData.groupby('hourdate').min()['date'].values].hourdate.values
+        tempclose = FutureData.loc[FutureData.groupby('hourdate').max()['date'].values][["Close"]]
+        tempclose.index = FutureData.loc[FutureData.groupby('hourdate').max()['date'].values].hourdate.values
+
+        Final60Tdata = Final60Tdata.join(tempopen[["Open",'date']]).join(tempclose[["Close"]])
+        Final60Tdata.index = Final60Tdata.date
+        Final60Tdata.columns = ['max','min','Volume','open','date','close']
+
+        # 對齊交易日 + 假日特例
+        Final60Tdata['dateonly'] = pd.to_datetime((Final60Tdata.date - timedelta(hours=15)).dt.date)
+        Final60Tdata.loc[(Final60Tdata.date - timedelta(hours=13)).dt.weekday == 6, 'dateonly'] = pd.to_datetime(
+            (Final60Tdata[(Final60Tdata.date - timedelta(hours=13)).dt.weekday == 6].date - timedelta(hours=63)).dt.date
+        )
+        manual = {
+            datetime(2023, 9,29): datetime(2023, 9,28),
+            datetime(2024, 4, 5): datetime(2024, 4, 3),
+            datetime(2024, 5, 1): datetime(2024, 4,30),
+            datetime(2024, 6,10): datetime(2024, 6, 7),
+            datetime(2025, 2,28): datetime(2025, 2,27),
+            datetime(2025, 4, 4): datetime(2025, 4, 2),
+            datetime(2025, 5, 1): datetime(2025, 4,30),
+        }
+        for k, v in manual.items():
+            Final60Tdata.loc[Final60Tdata.dateonly == k, 'dateonly'] = v
+
+        # 併入成本/極限
+        Final60Tdata = pd.merge(Final60Tdata, cost_df,     left_on="dateonly", right_on="日期", how='left')
+        Final60Tdata = pd.merge(Final60Tdata, inves_limit, on="日期",          how='left')
+        Final60Tdata = pd.merge(Final60Tdata, dealer_limit,on="日期",          how='left')
+
+        # 微調 1 分鐘
+        idx_min1 = Final60Tdata.date.dt.minute == 1
+        Final60Tdata.loc[idx_min1, 'date'] = Final60Tdata.loc[idx_min1, 'date'] - timedelta(minutes=1)
+        Final60Tdata.index = Final60Tdata.date
+        Final60Tdata = Final60Tdata.sort_index()
+
+        # 指標（20MA / 布林 / K、D / uline,dline / IC）
+        Final60Tdata['20MA'] = Final60Tdata['close'].rolling(20).mean()
+        Final60Tdata['std']  = Final60Tdata['close'].rolling(20).std()
+        Final60Tdata['upper_band']  = Final60Tdata['20MA'] + 2 * Final60Tdata['std']
+        Final60Tdata['lower_band']  = Final60Tdata['20MA'] - 2 * Final60Tdata['std']
+        Final60Tdata['upper_band1'] = Final60Tdata['20MA'] + 1 * Final60Tdata['std']
+        Final60Tdata['lower_band1'] = Final60Tdata['20MA'] - 1 * Final60Tdata['std']
+        Final60Tdata['IC'] = Final60Tdata['close'] + 2*Final60Tdata['close'].shift(1) - Final60Tdata['close'].shift(3) - Final60Tdata['close'].shift(4)
+
+        low_list  = Final60Tdata['min'].rolling(9, min_periods=9).min().fillna(Final60Tdata['min'].expanding().min())
+        high_list = Final60Tdata['max'].rolling(9, min_periods=9).max().fillna(Final60Tdata['max'].expanding().max())
+        rsv = (Final60Tdata['close'] - low_list) / (high_list - low_list) * 100
+        Final60Tdata['K'] = pd.DataFrame(rsv).ewm(com=2).mean()
+        Final60Tdata['D'] = Final60Tdata['K'].ewm(com=2).mean()
+        ds = 2
+        Final60Tdata['uline'] = Final60Tdata['max'].rolling(ds, min_periods=1).max()
+        Final60Tdata['dline'] = Final60Tdata['min'].rolling(ds, min_periods=1).min()
+        Final60Tdata["all_kk"] = 0
+        Final60Tdata['labelb'] = 1
+        Final60Tdata = Final60Tdata[~Final60Tdata.index.duplicated(keep='first')]
+
+        barssince5 = barssince6 = 0
+        for i in range(2, len(Final60Tdata.index)):
+            try:
+                condition51 = (Final60Tdata.iloc[i-1].max < Final60Tdata.iloc[i-2].min) and (Final60Tdata.iloc[i].min > Final60Tdata.iloc[i-1].max)
+                condition53 = (Final60Tdata.iloc[i].close > Final60Tdata.iloc[i-1].uline) and (Final60Tdata.iloc[i-1].close <= Final60Tdata.iloc[i-1].uline)
+                condition61 = (Final60Tdata.iloc[i-1].min > Final60Tdata.iloc[i-2].max) and (Final60Tdata.iloc[i].max < Final60Tdata.iloc[i-1].min)
+                condition63 = (Final60Tdata.iloc[i].close < Final60Tdata.iloc[i-1].dline) and (Final60Tdata.iloc[i-1].close >= Final60Tdata.iloc[i-1].dline)
+            except Exception:
+                condition51=condition53=condition61=condition63=True
+            condition54 = condition51 or condition53
+            condition64 = condition61 or condition63
+
+            if Final60Tdata.iloc[i].close > Final60Tdata.iloc[i].upper_band1:
+                Final60Tdata.iloc[i, Final60Tdata.columns.get_loc('labelb')] = 1
+            elif Final60Tdata.iloc[i].close < Final60Tdata.iloc[i].lower_band1:
+                Final60Tdata.iloc[i, Final60Tdata.columns.get_loc('labelb')] = -1
+            else:
+                Final60Tdata.iloc[i, Final60Tdata.columns.get_loc('labelb')] = Final60Tdata.iloc[i-1].labelb
+
+            barssince5 = 1 if condition54 else (barssince5 + 1)
+            barssince6 = 1 if condition64 else (barssince6 + 1)
+            Final60Tdata.iloc[i, Final60Tdata.columns.get_loc('all_kk')] = 1 if barssince5 < barssince6 else -1
+
+        # 只留最近 130 根
+        Final60Tdata = Final60Tdata.iloc[-130:].copy()
+
+        # ====== 300分彙整 ======
+        start_times = [timedelta(hours=1), timedelta(hours=8, minutes=45), timedelta(hours=15), timedelta(hours=20)]
+        data_300 = []
+        current_date = datetime.combine(df_ts.iloc[0]['ts'].date(), dtime(0, 0))
+        while current_date.date() <= df_ts['ts'].iloc[-1].date():
+            for stt in start_times:
+                start = current_date + stt
+                end   = start + timedelta(hours=5)
+                period = df_ts[(df_ts['ts'] > start) & (df_ts['ts'] < end)].dropna(subset=['Open'])
+                if period.shape[0]:
+                    data_300.append([start, period.iloc[0]['Open'], period.iloc[-1]['Close'],
+                                     period['High'].max(), period['Low'].min(), period['Volume'].sum()])
+                else:
+                    data_300.append([start, None, None, None, None, None])
+            current_date += timedelta(days=1)
+
+        df_300 = pd.DataFrame(data_300, columns=['ts','open','close','max','min','Volume'])
+        df_300 = df_300.dropna(subset=['open'])
+        df_300['date'] = df_300['ts']
+        df_300.set_index('ts', inplace=True)
+
+        df_300['dateonly'] = pd.to_datetime((df_300.index - timedelta(hours=15)).date)
+        df_300.loc[(df_300.date - timedelta(hours=13)).dt.weekday == 6, 'dateonly'] = pd.to_datetime(
+            (df_300[(df_300.date - timedelta(hours=13)).dt.weekday == 6].date - timedelta(hours=63)).dt.date
+        )
+        for k, v in manual.items():
+            df_300.loc[df_300.dateonly == k, 'dateonly'] = v
+
+        df_300 = pd.merge(df_300, cost_df,     left_on="dateonly", right_on="日期", how='left')
+        df_300 = pd.merge(df_300, inves_limit, on="日期",          how='left')
+        df_300 = pd.merge(df_300, dealer_limit,on="日期",          how='left')
+        df_300 = df_300.sort_index()
+
+        df_300['20MA'] = df_300['close'].rolling(20).mean()
+        df_300['std']  = df_300['close'].rolling(20).std()
+        df_300['upper_band']  = df_300['20MA'] + 2 * df_300['std']
+        df_300['lower_band']  = df_300['20MA'] - 2 * df_300['std']
+        df_300['upper_band1'] = df_300['20MA'] + 1 * df_300['std']
+        df_300['lower_band1'] = df_300['20MA'] - 1 * df_300['std']
+
+        low_list2  = df_300['min'].rolling(9, min_periods=9).min().fillna(df_300['min'].expanding().min())
+        high_list2 = df_300['max'].rolling(9, min_periods=9).max().fillna(df_300['max'].expanding().max())
+        rsv2 = (df_300['close'] - low_list2) / (high_list2 - low_list2) * 100
+        df_300['K'] = pd.DataFrame(rsv2).ewm(com=2).mean()
+        df_300['D'] = df_300['K'].ewm(com=2).mean()
+        ds2 = 2
+        df_300['uline'] = df_300['max'].rolling(ds2, min_periods=1).max()
+        df_300['dline'] = df_300['min'].rolling(ds2, min_periods=1).min()
+        df_300["all_kk"] = 0
+        df_300['labelb'] = 1
+        df_300 = df_300[~df_300.index.duplicated(keep='first')]
+
+        # 簡化同樣標註流程（不需再次 barssince；直接繼續沿用上面的方式亦可）
+        for i in range(2, len(df_300.index)):
+            if df_300.iloc[i].close > df_300.iloc[i].upper_band1:
+                df_300.iloc[i, df_300.columns.get_loc('labelb')] = 1
+            elif df_300.iloc[i].close < df_300.iloc[i].lower_band1:
+                df_300.iloc[i, df_300.columns.get_loc('labelb')] = -1
+            else:
+                df_300.iloc[i, df_300.columns.get_loc('labelb')] = df_300.iloc[i-1].labelb
+            # all_kk （與 60分一致的邏輯：用 uline/dline 觸發，這裡保持簡化可行版本）
+            cond54 = ((df_300.iloc[i-1].max < df_300.iloc[i-2].min) and (df_300.iloc[i].min > df_300.iloc[i-1].max)) or \
+                     ((df_300.iloc[i].close > df_300.iloc[i-1].uline) and (df_300.iloc[i-1].close <= df_300.iloc[i-1].uline))
+            cond64 = ((df_300.iloc[i-1].min > df_300.iloc[i-2].max) and (df_300.iloc[i].max < df_300.iloc[i-1].min)) or \
+                     ((df_300.iloc[i].close < df_300.iloc[i-1].dline) and (df_300.iloc[i-1].close >= df_300.iloc[i-1].dline))
+            # 用近兩根作簡化決策
+            df_300.iloc[i, df_300.columns.get_loc('all_kk')] = 1 if cond54 and not cond64 else (-1 if cond64 and not cond54 else df_300.iloc[i-1].get('all_kk', 0))
+
+        df_300 = df_300.iloc[-80:].copy()
+
+        # =========================
+        # 3) 作圖
+        # =========================
+        fig = make_subplots(
+            rows=2, cols=1,
+            specs=[[{"secondary_y": True}], [{"secondary_y": True}]],
+            vertical_spacing=0.2,
+            subplot_titles=["TAIEX FUTURE 60分", "TAIEX FUTURE 300分"]
+        )
+
+        # --- 第一列：60分 ---
+        x60 = Final60Tdata.index.strftime("%m-%d-%Y %H:%M")
+        volume_colors1 = [red_color if Final60Tdata['close'].iloc[i] > Final60Tdata['close'].iloc[i-1] else green_color for i in range(len(Final60Tdata['close']))]
+        if len(volume_colors1): volume_colors1[0] = green_color
+        fig.add_trace(go.Bar(x=x60, y=Final60Tdata['Volume'], name='成交量', marker=dict(color=volume_colors1)), row=1, col=1, secondary_y=False)
+
+        # 帶區塊（依 labelb 決定填色）
+        idxs = Final60Tdata.index
+        for bandstart in range(1, len(idxs)):
+            if bandstart >= len(idxs)-1: break
+            label_now = Final60Tdata['labelb'].iloc[bandstart]
+            checkidx = bandstart
+            while checkidx < len(idxs)-1 and Final60Tdata['labelb'].iloc[checkidx] == Final60Tdata['labelb'].iloc[checkidx+1]:
+                checkidx += 1
+            bandend = min(checkidx+1, len(idxs))
+            color = 'rgba(256,256,0,0.2)' if label_now == 1 else 'rgba(137, 207, 240, 0.2)'
+            xseg = idxs[bandstart:bandend].strftime("%m-%d-%Y %H:%M")
+            fig.add_trace(go.Scatter(x=xseg, y=Final60Tdata['lower_band'].iloc[bandstart:bandend], line=dict(color='rgba(0,0,0,0)'),
+                                     showlegend=False), row=1, col=1, secondary_y=True)
+            fig.add_trace(go.Scatter(x=xseg, y=Final60Tdata['upper_band'].iloc[bandstart:bandend], line=dict(color='rgba(0,0,0,0)'),
+                                     fill='tonexty', fillcolor=color, showlegend=False), row=1, col=1, secondary_y=True)
+
+        # 成本、均線
+        fig.add_trace(go.Scatter(x=x60, y=Final60Tdata['外資成本'], mode='lines', name='外資成本'), row=1, col=1, secondary_y=True)
+        fig.add_trace(go.Scatter(x=x60, y=Final60Tdata['20MA'],     mode='lines', line=dict(color='green'), name='MA20'), row=1, col=1, secondary_y=True)
+
+        # K 線（四種情境）
+        def cs_masked(df, msk, color, width=1):
+            return go.Candlestick(
+                x=df.index[msk].strftime("%m-%d-%Y %H:%M"),
+                open=df['open'][msk], high=df['max'][msk], low=df['min'][msk], close=df['close'][msk],
+                increasing_line_color=color, increasing_fillcolor=no_color,
+                decreasing_line_color=color, decreasing_fillcolor=no_color,
+                line=dict(width=width), name='OHLC', showlegend=False
+            )
+        up1 = (Final60Tdata['all_kk'] == -1) & (Final60Tdata['close'] > Final60Tdata['open'])
+        up2 = (Final60Tdata['all_kk'] ==  1) & (Final60Tdata['close'] > Final60Tdata['open'])
+        dn1 = (Final60Tdata['all_kk'] == -1) & (Final60Tdata['close'] < Final60Tdata['open'])
+        dn2 = (Final60Tdata['all_kk'] ==  1) & (Final60Tdata['close'] < Final60Tdata['open'])
+        fig.add_trace(cs_masked(Final60Tdata, up1, decreasing_color, 2), row=1, col=1, secondary_y=True)
+        fig.add_trace(cs_masked(Final60Tdata, up2, increasing_color, 1), row=1, col=1, secondary_y=True)
+        fig.add_trace(cs_masked(Final60Tdata, dn1, decreasing_color, 1), row=1, col=1, secondary_y=True)
+        fig.add_trace(cs_masked(Final60Tdata, dn2, increasing_color, 1), row=1, col=1, secondary_y=True)
+
+        # --- 第二列：300分 ---
+        x300 = df_300.index.strftime("%m-%d-%Y %H:%M")
+        volume_colors2 = [red_color if df_300['close'].iloc[i] > df_300['close'].iloc[i-1] else green_color for i in range(len(df_300['close']))]
+        if len(volume_colors2): volume_colors2[0] = green_color
+        fig.add_trace(go.Bar(x=x300, y=df_300['Volume'], name='成交量', marker=dict(color=volume_colors2)), row=2, col=1, secondary_y=False)
+        fig.add_trace(go.Scatter(x=x300, y=df_300['外資成本'], mode='lines', name='外資成本'), row=2, col=1, secondary_y=True)
+        fig.add_trace(go.Scatter(x=x300, y=df_300['20MA'],     mode='lines', line=dict(color='green'), name='MA20'), row=2, col=1, secondary_y=True)
+
+        # 軸與樣式
+        fig.update_xaxes(rangeslider={'visible': False},
+                         rangebreaks=[dict(bounds=[6,8], pattern="hour"),
+                                      dict(bounds=[13,15], pattern="hour"),
+                                      dict(bounds=['sun','mon'])],
+                         row=1, col=1)
+        fig.update_xaxes(rangeslider={'visible': False},
+                         rangebreaks=[dict(bounds=['sat','mon'])],
+                         row=2, col=1)
+        fig.update_yaxes(range=[0, max(1, Final60Tdata['Volume'].max())*1.1], showgrid=False, secondary_y=False, row=1, col=1)
+        fig.update_yaxes(range=[Final60Tdata['min'].min()-200, Final60Tdata['max'].max()+200], showgrid=False, secondary_y=True, row=1, col=1)
+        fig.update_yaxes(range=[0, max(1, df_300['Volume'].max())*1.1], showgrid=False, secondary_y=False, row=2, col=1)
+        fig.update_yaxes(range=[df_300['min'].min()-200, df_300['max'].max()+200], showgrid=False, secondary_y=True, row=2, col=1)
+
+        fig.update_annotations(font_size=12)
+        fig.update_layout(
+            title_text="", hovermode='x unified',
+            width=1200, height=1200,
+            hoverlabel_namelength=-1,
+            hoverlabel=dict(align='left', bgcolor='rgba(255,255,255,0.5)', font=dict(color='black')),
+            legend_traceorder="reversed"
+        )
+
+        # =========================
+        # 4) 原子輸出 PNG
+        # =========================
+        out = images_dir / filename
+        tmp = out.with_suffix(".png.tmp")
+        fig.write_image(str(tmp), format="png", scale=2)   # 需要 plotly + kaleido (+ Chrome)
+        os.replace(tmp, out)
+        return out
+
+    finally:
+        try: con_eq.close()
+        except Exception: pass
+        try: con_fu.close()
+        except Exception: pass
 
 @app.route("/images/<path:fname>", methods=["GET"])
 def serve_image(fname):

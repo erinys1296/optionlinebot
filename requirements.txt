@@ -3,5 +3,6 @@ line-bot-sdk
 gunicorn
 plotly
 kaleido
-numpy
 pandas
+requests
+numpy
