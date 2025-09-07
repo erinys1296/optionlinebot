@@ -414,7 +414,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         )
 
         # --- 第一列：60分 ---
-        x60 = Final60Tdata.index.strftime("%m-%d-%Y %H:%M")
+        x60 = pd.to_datetime(Final60Tdata['date']).dt.strftime("%m-%d-%Y %H:%M")
         volume_colors1 = [red_color if Final60Tdata['close'].iloc[i] > Final60Tdata['close'].iloc[i-1] else green_color for i in range(len(Final60Tdata['close']))]
         if len(volume_colors1): volume_colors1[0] = green_color
         fig.add_trace(go.Bar(x=x60, y=Final60Tdata['Volume'], name='成交量', marker=dict(color=volume_colors1)), row=1, col=1, secondary_y=False)
@@ -458,7 +458,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         fig.add_trace(cs_masked(Final60Tdata, dn2, increasing_color, 1), row=1, col=1, secondary_y=True)
 
         # --- 第二列：300分 ---
-        x300 = df_300.index.strftime("%m-%d-%Y %H:%M")
+        x300 = pd.to_datetime(df_300['date']).dt.strftime("%m-%d-%Y %H:%M")
         volume_colors2 = [red_color if df_300['close'].iloc[i] > df_300['close'].iloc[i-1] else green_color for i in range(len(df_300['close']))]
         if len(volume_colors2): volume_colors2[0] = green_color
         fig.add_trace(go.Bar(x=x300, y=df_300['Volume'], name='成交量', marker=dict(color=volume_colors2)), row=2, col=1, secondary_y=False)
