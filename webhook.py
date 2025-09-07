@@ -367,11 +367,11 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         plusi = 1
         while (finalhour + timedelta(hours = plusi)).hour in [6,7,13,14] or  (finalhour + timedelta(hours = plusi)-timedelta(hours = 5)).weekday in [5,6]:
             plusi = plusi + 1
-        IChour.append((finalhour + timedelta(hours = plusi)).strftime("%m-%d-%Y %H:%M"))
-        IChour.append((finalhour + timedelta(hours = plusi+1)).strftime("%m-%d-%Y %H:%M"))
+        IChour.append((finalhour + timedelta(hours = plusi)).strftime("%m-%d %H:%M"))
+        IChour.append((finalhour + timedelta(hours = plusi+1)).strftime("%m-%d %H:%M"))
 
         #Final60Tdata.index = Final60Tdata.index.astype('str')
-        Final60Tdata.index = Final60Tdata.index.strftime("%m-%d-%Y %H:%M")
+        Final60Tdata.index = Final60Tdata.index.strftime("%m-%d %H:%M")
         #Final60Tdata
 
 
@@ -381,8 +381,11 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         fig3_1 = make_subplots(
             rows = 2, 
             cols = 1, 
-            horizontal_spacing = 0.2,
-            vertical_spacing=0.2,subplot_titles = ["TAIEX FUTURE 60分","TAIEX FUTURE 300分"],
+            horizontal_spacing = 0.05,
+            #vertical_spacing=0.2,
+            vertical_spacing=0.15,   # 拉開上下子圖距離（預設 0.2 → 可以改 0.15~0.25）
+            row_heights=[0.6, 0.4],  # 上圖 60%，下圖 40%，避免擠在一起
+            subplot_titles = ["TAIEX FUTURE 60分","TAIEX FUTURE 300分"],
             shared_yaxes=False,
             
             #subplot_titles=subtitle,
@@ -729,10 +732,10 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         plusi = 1
         while (finalhour + timedelta(hours = plusi)).hour in [6,7,13,14] or  (finalhour + timedelta(hours = plusi)-timedelta(hours = 5)).weekday in [5,6]:
             plusi = plusi + 1
-        IChour2.append((finalhour + timedelta(hours = plusi)).strftime("%m-%d-%Y %H:%M"))
-        IChour2.append((finalhour + timedelta(hours = plusi+5)).strftime("%m-%d-%Y %H:%M"))
+        IChour2.append((finalhour + timedelta(hours = plusi)).strftime("%m-%d %H:%M"))
+        IChour2.append((finalhour + timedelta(hours = plusi+5)).strftime("%m-%d %H:%M"))
 
-        df_300.index = df_300.index.strftime(("%m-%d-%Y %H:%M"))
+        df_300.index = df_300.index.strftime(("%m-%d %H:%M"))
         #df_300
 
         checkb = df_300["labelb"].values[0]
@@ -996,8 +999,15 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                         width = 1200, 
                         height = 1800,
                         hoverlabel_namelength=-1,
+                        plot_bgcolor="rgb(30,30,30)",    # 繪圖區背景深灰
+                        paper_bgcolor="rgb(20,20,20)",   # 外框背景更深
+                        font=dict(color="white"),        # 改字體顏色成白色
                         
-                        hoverlabel=dict(align='left',bgcolor='rgba(255,255,255,0.5)',font=dict(color='black')),
+                        hhoverlabel=dict(
+                            align='left',
+                            bgcolor='rgba(50,50,50,0.8)',
+                            font=dict(color='white')
+                        ),
                         legend_traceorder="reversed",
                         )
 
