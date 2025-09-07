@@ -297,10 +297,14 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         barssince5 = barssince6 = 0
         for i in range(2, len(Final60Tdata.index)):
             try:
-                condition51 = (Final60Tdata.iloc[i-1].max < Final60Tdata.iloc[i-2].min) and (Final60Tdata.iloc[i].min > Final60Tdata.iloc[i-1].max)
-                condition53 = (Final60Tdata.iloc[i].close > Final60Tdata.iloc[i-1].uline) and (Final60Tdata.iloc[i-1].close <= Final60Tdata.iloc[i-1].uline)
-                condition61 = (Final60Tdata.iloc[i-1].min > Final60Tdata.iloc[i-2].max) and (Final60Tdata.iloc[i].max < Final60Tdata.iloc[i-1].min)
-                condition63 = (Final60Tdata.iloc[i].close < Final60Tdata.iloc[i-1].dline) and (Final60Tdata.iloc[i-1].close >= Final60Tdata.iloc[i-1].dline)
+                condition51 = (Final60Tdata['max'].iloc[i-1] < Final60Tdata['min'].iloc[i-2]) and \
+                      (Final60Tdata['min'].iloc[i]   > Final60Tdata['max'].iloc[i-1])
+                condition53 = (Final60Tdata['close'].iloc[i]   > Final60Tdata['uline'].iloc[i-1]) and \
+                      (Final60Tdata['close'].iloc[i-1] <= Final60Tdata['uline'].iloc[i-1])
+                condition61 = (Final60Tdata['min'].iloc[i-1] > Final60Tdata['max'].iloc[i-2]) and \
+                      (Final60Tdata['max'].iloc[i]   < Final60Tdata['min'].iloc[i-1])
+                condition63 = (Final60Tdata['close'].iloc[i]   < Final60Tdata['dline'].iloc[i-1]) and \
+                      (Final60Tdata['close'].iloc[i-1] >= Final60Tdata['dline'].iloc[i-1])
             except Exception:
                 condition51=condition53=condition61=condition63=True
             condition54 = condition51 or condition53
@@ -381,12 +385,21 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
             else:
                 df_300.iloc[i, df_300.columns.get_loc('labelb')] = df_300.iloc[i-1].labelb
             # all_kk （與 60分一致的邏輯：用 uline/dline 觸發，這裡保持簡化可行版本）
-            cond54 = ((df_300.iloc[i-1].max < df_300.iloc[i-2].min) and (df_300.iloc[i].min > df_300.iloc[i-1].max)) or \
-                     ((df_300.iloc[i].close > df_300.iloc[i-1].uline) and (df_300.iloc[i-1].close <= df_300.iloc[i-1].uline))
-            cond64 = ((df_300.iloc[i-1].min > df_300.iloc[i-2].max) and (df_300.iloc[i].max < df_300.iloc[i-1].min)) or \
-                     ((df_300.iloc[i].close < df_300.iloc[i-1].dline) and (df_300.iloc[i-1].close >= df_300.iloc[i-1].dline))
+            # all_kk（用與 60 分相同的條件，但全都改成欄位取值）
+            cond54 = ( (df_300['max'].iloc[i-1] < df_300['min'].iloc[i-2]) and
+                    (df_300['min'].iloc[i]   > df_300['max'].iloc[i-1]) ) or \
+                    ( (df_300['close'].iloc[i]   > df_300['uline'].iloc[i-1]) and
+                    (df_300['close'].iloc[i-1] <= df_300['uline'].iloc[i-1]) )
+
+            cond64 = ( (df_300['min'].iloc[i-1] > df_300['max'].iloc[i-2]) and
+                    (df_300['max'].iloc[i]   < df_300['min'].iloc[i-1]) ) or \
+                    ( (df_300['close'].iloc[i]   < df_300['dline'].iloc[i-1]) and
+                    (df_300['close'].iloc[i-1] >= df_300['dline'].iloc[i-1]) )
+
+            df_300.loc[df_300.index[i], 'all_kk'] = 1 if cond54 and not cond64 else \
+                                                (-1 if cond64 and not cond54 else df_300['all_kk'].iloc[i-1])
             # 用近兩根作簡化決策
-            df_300.iloc[i, df_300.columns.get_loc('all_kk')] = 1 if cond54 and not cond64 else (-1 if cond64 and not cond54 else df_300.iloc[i-1].get('all_kk', 0))
+            # df_300.iloc[i, df_300.columns.get_loc('all_kk')] = 1 if cond54 and not cond64 else (-1 if cond64 and not cond54 else df_300.iloc[i-1].get('all_kk', 0))
 
         df_300 = df_300.iloc[-80:].copy()
 
