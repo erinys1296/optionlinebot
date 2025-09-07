@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: line-webhook
+    env: python
+    # ...你的 web 設定...
+
+  # 平日 台灣 09:04～次日 05:04（= UTC 01:04～21:04），每小時的 :04
+  - type: cron
+    name: genpush-weekdays-xx04
+    schedule: "4 1-21 * * 1-5"   # 分 時 日 月 週（UTC）
+    command: |
+      curl -s "https://optionlinebot.onrender.com/cron/genplot?key=$CRON_KEY&filename=latest.png"
+      sleep 50
+      curl -s -X POST "https://optionlinebot.onrender.com/cron/push?key=$CRON_KEY&mode=image&filename=latest.png"
+
+  # 週日 台灣 22:57（= UTC 14:57）
+  - type: cron
+    name: genpush-sun-2257
+    schedule: "57 14 * * 0"
+    command: |
+      curl -s "https://optionlinebot.onrender.com/cron/genplot?key=$CRON_KEY&filename=test.png"
+      sleep 50
+      curl -s -X POST "https://optionlinebot.onrender.com/cron/push?key=$CRON_KEY&mode=image&filename=test.png"
