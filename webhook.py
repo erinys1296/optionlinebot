@@ -6,15 +6,13 @@ from typing import Set, List
 from flask import Flask, request, abort, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-)
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
-REGISTER_CODE = os.environ.get("REGISTER_CODE", "abc123")     # 使用者註冊用驗證碼
-CRON_KEY = os.environ.get("CRON_KEY")                         # Admin/Cron 金鑰（必填，否則管理端點會 401）
+REGISTER_CODE = os.environ.get("REGISTER_CODE", "abc123")   # 使用者註冊用驗證碼
+CRON_KEY = os.environ.get("CRON_KEY")                       # Admin/Cron 金鑰（必填）
 WHITE_LIST_FILE = Path(os.environ.get("WHITELIST_PATH", "whitelist.json"))
 
 # ========= App / SDK =========
@@ -24,6 +22,27 @@ logger = logging.getLogger("webhook")
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
+
+# --- Persistent Disk 初始化與一次性搬遷 ---
+DEFAULT_WHITE_LIST_FILE = Path("whitelist.json")  # 容器本地舊路徑
+WHITE_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+def _bootstrap_storage():
+    """若掛了磁碟但檔案不存在，且舊檔存在，則把舊檔搬到新位置；否則建立空白檔。"""
+    try:
+        if WHITE_LIST_FILE.exists():
+            return
+        if WHITE_LIST_FILE != DEFAULT_WHITE_LIST_FILE and DEFAULT_WHITE_LIST_FILE.exists():
+            data = json.loads(DEFAULT_WHITE_LIST_FILE.read_text("utf-8"))
+            WHITE_LIST_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+            print(f"[BOOTSTRAP] migrated whitelist from {DEFAULT_WHITE_LIST_FILE} -> {WHITE_LIST_FILE}")
+        else:
+            WHITE_LIST_FILE.write_text("[]", "utf-8")
+            print(f"[BOOTSTRAP] created empty whitelist at {WHITE_LIST_FILE}")
+    except Exception as e:
+        print("[BOOTSTRAP] error:", e)
+
+_bootstrap_storage()
 
 # ========= 白名單存取 =========
 _lock = threading.Lock()
@@ -40,9 +59,15 @@ def _load_whitelist() -> Set[str]:
         return set()
 
 def _save_whitelist(ids: Set[str]):
+    """原子寫檔：先寫暫存檔，再 os.replace 覆蓋，避免中途中斷導致 JSON 壞掉。"""
+    tmp = WHITE_LIST_FILE.with_suffix(".json.tmp")
+    data = json.dumps(sorted(list(ids)), ensure_ascii=False, indent=2)
     with _lock:
-        with WHITE_LIST_FILE.open("w", encoding="utf-8") as f:
-            json.dump(sorted(list(ids)), f, ensure_ascii=False, indent=2)
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, WHITE_LIST_FILE)
 
 def _require_key():
     key = request.args.get("key") or request.headers.get("X-CRON-KEY")
@@ -55,9 +80,10 @@ def _push_to_uids(uids: List[str], msg: str) -> int:
     for uid in uids:
         try:
             line_bot_api.push_message(uid, TextSendMessage(text=msg))
-            sent += 1
         except Exception as e:
             logger.warning("push fail uid=%s err=%s", uid, e)
+        else:
+            sent += 1
     return sent
 
 def _push_to_whitelist(msg: str) -> int:
