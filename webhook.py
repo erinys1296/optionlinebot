@@ -1003,7 +1003,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                         plot_bgcolor="rgb(256,256,256)",    # 繪圖區背景白色
                         paper_bgcolor="rgb(256,256,256)",   # 外框背景白
                         font=dict(color="black", size=10),          # 改字體顏色成黑色
-                        show_legend = False,
+                        showlegend = False,
                     
                         #legend_traceorder="reversed",
                         )
