@@ -8,3 +8,4 @@ requests
 numpy
 datetime
 typing
+matplotlib
