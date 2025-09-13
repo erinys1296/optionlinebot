@@ -171,11 +171,12 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
 
     # ---- 顏色（若外部有同名變數會用外部的）----
     global red_color, green_color, increasing_color, decreasing_color, no_color
-    red_color        = locals().get("red_color",   "rgba(220, 53, 69, 0.9)")
-    green_color      = locals().get("green_color", "rgba(25, 135, 84, 0.9)")
-    increasing_color = locals().get("increasing_color", "rgba(13, 110, 253, 1.0)")
-    decreasing_color = locals().get("decreasing_color", "rgba(33, 37, 41, 1.0)")
-    no_color         = locals().get("no_color", "rgba(0,0,0,0)")
+    red_color        = locals().get("red_color",   'rgba(255, 0, 0, 0.1)')
+    green_color      = locals().get("green_color", 'rgba(30, 144, 255,0.1)')
+    increasing_color = locals().get("increasing_color", 'rgb(255, 0, 0)')
+    decreasing_color = locals().get("decreasing_color", 'rgb(0, 0, 245)')
+    no_color         = locals().get("no_color", 'rgba(256, 256, 256,0)')
+
 
     # ---- 目錄（若未定義 IMAGES_DIR，用預設）----
     images_dir = globals().get("IMAGES_DIR", Path(os.environ.get("IMAGES_DIR", "/var/data/images")))
@@ -447,7 +448,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         fig3_1.add_trace(go.Scatter(x=Final60Tdata.index,
                                 y=Final60Tdata['外資成本'],
                                 mode='lines',
-                                #line=dict(color='green'),
+                                line=dict(width=0.5),
                                 name='外資成本'),row=1, col=1, secondary_y= True)
 
         #fig3_1.add_trace(go.Scatter(x=Final60Tdata.index,
@@ -480,7 +481,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         fig3_1.add_trace(go.Scatter(x=Final60Tdata.index,
                                 y=Final60Tdata['20MA'],
                                 mode='lines',
-                                line=dict(color='green'),
+                                line=dict(color='green', width=0.5),
                                 name='MA20'),row=1, col=1, secondary_y= True)
         #fig3_1.add_trace(go.Scatter(x=Final60Tdata.index,
         #                        y=Final60Tdata['200MA'],
@@ -515,7 +516,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=no_color, #fill_increasing_color(Final60Tdata.index>Final60Tdata.index[50])
                 decreasing_line_color=decreasing_color,
                 decreasing_fillcolor=no_color,#decreasing_color,
-                line=dict(width=2),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -534,7 +535,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=no_color, #fill_increasing_color(Final60Tdata.index>Final60Tdata.index[50])
                 decreasing_line_color=increasing_color,
                 decreasing_fillcolor=no_color,#decreasing_color,
-                line=dict(width=1),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -553,7 +554,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=decreasing_color, #fill_increasing_color(Final60Tdata.index>Final60Tdata.index[50])
                 decreasing_line_color=decreasing_color,
                 decreasing_fillcolor=decreasing_color,#decreasing_color,
-                line=dict(width=1),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -572,7 +573,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=increasing_color, #fill_increasing_color(Final60Tdata.index>FinalＷeekdata.index[50])
                 decreasing_line_color=increasing_color,
                 decreasing_fillcolor=increasing_color,#decreasing_color,
-                line=dict(width=1),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -789,7 +790,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         fig3_1.add_trace(go.Scatter(x=df_300.index,
                                 y=df_300['外資成本'],
                                 mode='lines',
-                                #line=dict(color='green'),
+                                line=dict( width=0.5),
                                 name='外資成本'),row=2, col=1, secondary_y= True)
         #fig3_1.add_trace(go.Scatter(x=df_300.index,
         #                        y=df_300['外資上極限'],
@@ -824,7 +825,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         fig3_1.add_trace(go.Scatter(x=df_300.index,
                                 y=df_300['20MA'],
                                 mode='lines',
-                                line=dict(color='green'),
+                                line=dict(color='green', width=0.5),
                                 name='MA20'),row=2, col=1, secondary_y= True)
         #fig3_1.add_trace(go.Scatter(x=df_300.index,
         #                        y=df_300['200MA'],
@@ -857,7 +858,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=no_color, #fill_increasing_color(df_300.index>df_300.index[50])
                 decreasing_line_color=decreasing_color,
                 decreasing_fillcolor=no_color,#decreasing_color,
-                line=dict(width=2),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -876,7 +877,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=no_color, #fill_increasing_color(df_300.index>df_300.index[50])
                 decreasing_line_color=increasing_color,
                 decreasing_fillcolor=no_color,#decreasing_color,
-                line=dict(width=1),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -895,7 +896,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=decreasing_color, #fill_increasing_color(df_300.index>df_300.index[50])
                 decreasing_line_color=decreasing_color,
                 decreasing_fillcolor=decreasing_color,#decreasing_color,
-                line=dict(width=1),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -914,7 +915,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                 increasing_fillcolor=increasing_color, #fill_increasing_color(Final60Tdata.index>FinalＷeekdata.index[50])
                 decreasing_line_color=increasing_color,
                 decreasing_fillcolor=increasing_color,#decreasing_color,
-                line=dict(width=1),
+                line=dict(width=0.5),
                 name='OHLC',showlegend=False
             )#,
 
@@ -990,7 +991,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
 
 
         # 設定圖的標題跟長寬
-        fig3_1.update_annotations(font_size=12)
+        fig3_1.update_annotations(font_size=8)
         fig3_1.update_layout( hovermode='x unified',
                         yaxis = dict(showgrid=False,showticklabels=False),#,tickformat = ",.0f",range=[Final60Tdata['min'].min() - 50, Final60Tdata['max'].max() + 50]),
                         yaxis2 = dict(showgrid=False),#showticklabels=False,range=[0, Final60Tdata['Volume'].max()+100]),
@@ -1001,13 +1002,9 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                         hoverlabel_namelength=-1,
                         plot_bgcolor="rgb(256,256,256)",    # 繪圖區背景白色
                         paper_bgcolor="rgb(256,256,256)",   # 外框背景白
-                        font=dict(color="black"),        # 改字體顏色成黑色
-
-                        hoverlabel=dict(
-                            align='left',
-                            bgcolor='rgba(50,50,50,0.8)',
-                            font=dict(color='white')
-                        ),
+                        font=dict(color="black", size=10),          # 改字體顏色成黑色
+                        show_legend = False,
+                    
                         #legend_traceorder="reversed",
                         )
 
