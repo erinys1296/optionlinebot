@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os, json, threading, time, logging
 from pathlib import Path
-from typing import Set, List, Optional
+from typing import Any, Dict, Set, List, Optional
 
 from flask import Flask, request, abort, jsonify, send_from_directory, make_response
 from linebot import LineBotApi, WebhookHandler
@@ -9,10 +9,14 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage, ImageSendMessage
 
 import sqlite3, requests, pandas as pd, numpy as np, io, time, os
-from datetime import datetime, timedelta, time as dtime
+from datetime import date, datetime, timedelta, time as dtime
 from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
@@ -42,8 +46,8 @@ FUT_HOURLY_TABLE   = os.environ.get("FUT_HOURLY_TABLE", "futurehourly")
 increasing_color = 'rgb(255, 0, 0)'
 decreasing_color = 'rgb(0, 0, 245)'
 
-red_color = 'rgba(255, 0, 0, 0.1)'
-green_color = 'rgba(30, 144, 255,0.1)'
+red_color = 'rgba(255, 0, 0, 0.2)'
+green_color = 'rgba(30, 144, 255,0.2)'
 
 no_color = 'rgba(256, 256, 256,0)'
 
@@ -159,6 +163,43 @@ def get_sqlite_connection(which: str) -> sqlite3.Connection:
         raise ValueError("which must be 'equity' or 'futures'")
     return sqlite3.connect(str(p))
 
+# ========= 表格：生成 & 成圖 =========
+def _df_to_table_png(df: pd.DataFrame, filename: str, title: Optional[str] = None) -> Path:
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    h = max(2.5, 0.55 * (len(df) + 2))
+    w = min(22, max(6, len(df.columns) * 1.2))
+    fig, ax = plt.subplots(figsize=(w, h), dpi=180)
+    ax.axis('off')
+    if title:
+        ax.set_title(title, fontsize=14, pad=10)
+    tbl = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(10)
+    tbl.scale(1, 1.2)
+    out = IMAGES_DIR / filename
+    plt.tight_layout()
+    fig.savefig(out, bbox_inches='tight')
+    plt.close(fig)
+    return out
+
+def _push_images_to_uids(uids: List[str], img_urls: List[str]) -> int:
+    MAX_PER_PUSH = 5
+    sent_total = 0
+    batches = [img_urls[i:i+MAX_PER_PUSH] for i in range(0, len(img_urls), MAX_PER_PUSH)]
+    for uid in uids:
+        for batch in batches:
+            try:
+                messages = [ImageSendMessage(original_content_url=u, preview_image_url=u) for u in batch]
+                line_bot_api.push_message(uid, messages)
+                sent_total += len(batch)
+            except Exception as e:
+                logger.warning("push images fail uid=%s err=%s", uid, e)
+    return sent_total
+
+def _push_images_to_whitelist(img_urls: List[str]) -> int:
+    wl = sorted(list(_load_whitelist()))
+    return _push_images_to_uids(wl, img_urls)
+
 
 # ========= 圖片：生成 & 提供 =========
 def generate_plot_png(filename: str = "latest.png") -> Path:
@@ -171,8 +212,8 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
 
     # ---- 顏色（若外部有同名變數會用外部的）----
     global red_color, green_color, increasing_color, decreasing_color, no_color
-    red_color        = locals().get("red_color",   'rgba(255, 0, 0, 0.1)')
-    green_color      = locals().get("green_color", 'rgba(30, 144, 255,0.1)')
+    red_color        = locals().get("red_color",   'rgba(255, 0, 0, 0.2)')
+    green_color      = locals().get("green_color", 'rgba(30, 144, 255,0.2)')
     increasing_color = locals().get("increasing_color", 'rgb(255, 0, 0)')
     decreasing_color = locals().get("decreasing_color", 'rgb(0, 0, 245)')
     no_color         = locals().get("no_color", 'rgba(256, 256, 256,0)')
@@ -1023,6 +1064,180 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         try: con_fu.close()
         except Exception: pass
 
+# --- 工具：取得最後一個工作日（只避開週末） ---
+def _prev_weekday(d: date) -> date:
+    while d.weekday() >= 5:  # 5=Sat, 6=Sun
+        d -= timedelta(days=1)
+    return d
+
+# ---（可選）FinMind 指數漲跌點數，失敗就不加入 ---
+def _fetch_taiex_delta_map(start: str, end: str) -> Dict[str, Any]:
+    try:
+        token = os.getenv("FINMIND_TOKEN") or ""
+        url = "https://api.finmindtrade.com/api/v4/data"
+        params = {
+            "dataset": "TaiwanStockPrice",
+            "data_id": "TAIEX",
+            "start_date": start,
+            "end_date": end,
+            "token": token,
+        }
+        r = requests.get(url, params=params, timeout=8)
+        js = r.json()
+        df = pd.DataFrame(js.get("data", []))
+        if df.empty or "date" not in df or "spread" not in df:
+            # 有些版本欄位名是 change / spread / close-previous_close
+            if "close" in df and "open" in df:
+                df["spread"] = pd.to_numeric(df["close"], errors="coerce") - pd.to_numeric(df["open"], errors="coerce")
+            else:
+                return {}
+        df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+        return dict(zip(df["date"], df["spread"]))
+    except Exception:
+        return {}
+
+@app.route("/cron/gentables_options", methods=["GET", "POST"])
+def cron_gentables_options():
+    """
+    產生「選擇權三大法人籌碼」相關表格為 PNG：
+      1) 選擇日期的數據（options_futures_bs）
+      2) 日變動（外資/自營商/散戶 各一張），依 putcallsum_sep 計算『成交位置』
+      3) 參考數據（價平和/外資成本/指數漲跌點數）
+      4) 上下極限（df_option_limit）
+    Query 參數：
+      - date: YYYY-MM-DD（預設=今天；若是假日→往前找工作日）
+      - tag: 檔名標籤，預設=同上日期
+    回傳：各圖檔名與可公開網址
+    """
+    _require_key()
+
+    # 1) 解析日期
+    now_local = datetime.now().date()
+    q_date = request.args.get("date")
+    if q_date:
+        try:
+            base_day = datetime.strptime(q_date, "%Y-%m-%d").date()
+        except Exception:
+            abort(400, "bad date")
+    else:
+        base_day = now_local
+    sel_day = _prev_weekday(base_day)
+    tag = request.args.get("tag") or sel_day.strftime("%Y%m%d")
+    sel_str = sel_day.strftime("%Y-%m-%d")
+
+    # 2) 讀取 SQLite
+    db_path = Path("選擇權分析資料.sqlite3")
+    if not db_path.exists():
+        abort(500, "DB not found: 選擇權分析資料.sqlite3")
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        df_bs = pd.read_sql('select distinct * from options_futures_bs', con)
+        df_daygap = pd.read_sql('select distinct * from df_options_futures_daygap', con)
+        df_putcall = pd.read_sql('select distinct * from putcallsum_sep', con)
+        df_cost = pd.read_sql('select distinct * from df_cost', con)
+        df_limit = pd.read_sql('select distinct * from df_option_limit', con)
+    finally:
+        con.close()
+
+    # 3) 選擇日期的數據
+    df_sel = df_bs[df_bs["日期"] == sel_str].copy()
+    if df_sel.empty:
+        # 若該日仍無資料，就一路往前找最近一個有資料的工作日
+        back = 1
+        while df_sel.empty and back <= 5:
+            d2 = _prev_weekday(sel_day - timedelta(days=back))
+            sel_str = d2.strftime("%Y-%m-%d")
+            df_sel = df_bs[df_bs["日期"] == sel_str].copy()
+            back += 1
+
+    # 4) 日變動（以 sel_str 當天），並計算「成交位置」
+    gap_day_df = df_daygap[df_daygap["日期"] == sel_str].copy()
+    ref_row = df_putcall[df_putcall["日期"] == sel_str].copy()
+
+    # 容錯：若當天 put/call 參考不存在，用最近一筆
+    if ref_row.empty and not df_putcall.empty:
+        ref_row = df_putcall.sort_values("日期").tail(1).copy()
+
+    call_num = int(ref_row["價平和買權成交價"].iloc[0]) if not ref_row.empty else 0
+    put_num = int(ref_row["價平和賣權成交價"].iloc[0]) if not ref_row.empty else 0
+
+    if not gap_day_df.empty:
+        # 保留原始單價的絕對值邏輯
+        gap_day_df = gap_day_df.copy()
+        gap_day_df["成交位置"] = ""
+        # 單價有可能是字串，先轉數值
+        gap_day_df["單價"] = pd.to_numeric(gap_day_df["單價"], errors="coerce").fillna(0)
+        for idx in gap_day_df.index:
+            k = gap_day_df.at[idx, "種類"]
+            px = abs(gap_day_df.at[idx, "單價"])
+            if k == "買權":
+                gap_day_df.at[idx, "成交位置"] = "價內" if px > call_num else "價外"
+            elif k == "賣權":
+                gap_day_df.at[idx, "成交位置"] = "價內" if px > put_num else "價外"
+            else:
+                gap_day_df.at[idx, "成交位置"] = "不分"
+
+    foreign_df = gap_day_df[gap_day_df["身份"] == "外資"].copy()
+    dealer_df  = gap_day_df[gap_day_df["身份"] == "自營商"].copy()
+    retail_df  = gap_day_df[gap_day_df["身份"] == "散戶"].copy()
+
+    # 5) 參考數據（僅當天）
+    ref_df = df_putcall[df_putcall["日期"] == sel_str].copy()
+    ref_df = ref_df.rename(columns={
+        "日期":"日期",
+        "價平和履約價":"價平和履約價",
+        "價平和買權成交價":"價平和買權成交價",
+        "價平和賣權成交價":"價平和賣權成交價",
+    })
+
+    # 外資成本
+    if "外資成本" in df_cost.columns:
+        df_cost["外資成本"] = pd.to_numeric(df_cost["外資成本"], errors="coerce").astype("Int64")
+    ref_df = ref_df.merge(df_cost[["日期","外資成本"]], how="left", on="日期")
+
+    # 指數漲跌點數（用 FinMind，可設環境變數 FINMIND_TOKEN；取不到就略過）
+    taiex_map = _fetch_taiex_delta_map(sel_str, sel_str)
+    ref_df["漲跌點數"] = ref_df["日期"].map(taiex_map) if taiex_map else pd.NA
+
+    # 6) 上下極限（只取當天）
+    limit_df = df_limit[df_limit["日期"] == sel_str].copy()
+    # 若有『身份別』欄位，常用外資
+    if "身份別" in limit_df.columns:
+        limit_df = limit_df[limit_df["身份別"].isin(["外資","自營商","散戶"])].copy()
+
+    # 7) 轉成 PNG（共 1 + 3 + 1 + 1 = 最多 6 張）
+    imgs = []
+
+    tbl1 = _df_to_table_png(
+        df_sel.reset_index(drop=True),
+        f"opt_bs_{tag}.png",
+        title=f"選擇日期的數據（{sel_str}）"
+    ); imgs.append(tbl1)
+
+    def _safe_png(df, fname, title):
+        if df is None or df.empty:
+            # 給一張『無資料』空表，避免整體中斷
+            tmp = pd.DataFrame({"訊息": [f"{sel_str} 無資料"]})
+            return _df_to_table_png(tmp, fname, title=title)
+        return _df_to_table_png(df.reset_index(drop=True), fname, title=title)
+
+    imgs.append(_safe_png(foreign_df, f"opt_day_foreign_{tag}.png", f"日變動：外資（{sel_str}）"))
+    imgs.append(_safe_png(dealer_df,  f"opt_day_dealer_{tag}.png",  f"日變動：自營商（{sel_str}）"))
+    imgs.append(_safe_png(retail_df,  f"opt_day_retail_{tag}.png",  f"日變動：散戶（{sel_str}）"))
+
+    imgs.append(_safe_png(ref_df,     f"opt_ref_{tag}.png",         f"參考數據（{sel_str}）"))
+
+    imgs.append(_safe_png(limit_df,   f"opt_limit_{tag}.png",       f"上下極限（{sel_str}）"))
+
+    base = _public_base()
+    urls = [f"{base}/images/{p.name}" for p in imgs]
+
+    return jsonify(ok=True, date=sel_str, files=[p.name for p in imgs], urls=urls)
+
+
+
+
 @app.route("/images/<path:fname>", methods=["GET"])
 def serve_image(fname):
     """從 Persistent Disk 回傳圖片（/images/固定路徑）"""
@@ -1169,6 +1384,37 @@ def cron_push():
     msg = request.args.get("message") or "⏰ 固定時間提醒來囉！"
     count = _push_to_whitelist(msg)
     return f"OK, pushed to {count} subscribers"
+
+#推播表格
+@app.route("/cron/push_options_tables", methods=["GET", "POST"])
+def cron_push_options_tables():
+    """
+    推播「選擇權三大法人籌碼」的所有表格 PNG。
+    Query:
+      - date: YYYY-MM-DD（預設=今天；遇週末將往前一個工作日）
+      - files: 逗號分隔檔名；若未提供，會先呼叫 /cron/gentables_options 生成。
+    """
+    _require_key()
+    files_param = request.args.get("files")
+    q_date = request.args.get("date")
+
+    if files_param:
+        filenames = [x.strip() for x in files_param.split(",") if x.strip()]
+        sel_date = "N/A"
+        urls = [f"{_public_base()}/images/{fn}" for fn in filenames if (IMAGES_DIR / fn).exists()]
+    else:
+        q = f"/cron/gentables_options?key={CRON_KEY}"
+        if q_date:
+            q += f"&date={q_date}"
+        with app.test_request_context(q):
+            resp = cron_gentables_options().json
+        filenames = resp.get("files", [])
+        sel_date = resp.get("date")
+        urls = resp.get("urls", [])
+
+    count = _push_images_to_whitelist(urls)
+    return f"OK, pushed {len(urls)} images for {sel_date} (actually sent {count})."
+
 
 # ========= 管理 / 除錯端點（需 CRON_KEY） =========
 @app.route("/admin/whitelist", methods=["GET"])
