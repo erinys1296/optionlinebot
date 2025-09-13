@@ -999,10 +999,10 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
                         width = 800, 
                         height = 1800,
                         hoverlabel_namelength=-1,
-                        plot_bgcolor="rgb(30,30,30)",    # 繪圖區背景深灰
-                        paper_bgcolor="rgb(20,20,20)",   # 外框背景更深
-                        font=dict(color="white"),        # 改字體顏色成白色
-                        
+                        plot_bgcolor="rgb(256,256,256)",    # 繪圖區背景白色
+                        paper_bgcolor="rgb(256,256,256)",   # 外框背景白
+                        font=dict(color="black"),        # 改字體顏色成黑色
+
                         hoverlabel=dict(
                             align='left',
                             bgcolor='rgba(50,50,50,0.8)',
