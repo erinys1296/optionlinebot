@@ -32,8 +32,10 @@ PUBLIC_BASE = os.environ.get("PUBLIC_BASE")  # 例如 https://your-service.onren
 # ===== SQLite 來源與快取（請到 Render 環境變數設定）=====
 EQUITY_SQLITE_URL   = os.environ.get("EQUITY_SQLITE_URL")   # 主圖資料.sqlite3 的 RAW 連結
 FUTURES_SQLITE_URL  = os.environ.get("FUTURES_SQLITE_URL")  # FutureData.sqlite3 的 RAW 連結
+ANALYSIS_SQLITE_URL = os.environ.get("ANALYSIS_SQLITE_URL") # 選擇權分析.sqlite3 的 RAW 連結（可留空不使用）
 EQUITY_SQLITE_CACHE = Path(os.environ.get("EQUITY_SQLITE_CACHE", "/var/data/cache/equity.sqlite"))
 FUTURES_SQLITE_CACHE= Path(os.environ.get("FUTURES_SQLITE_CACHE","/var/data/cache/future.sqlite"))
+ANALYSIS_SQLITE_CACHE=Path(os.environ.get("ANALYSIS_SQLITE_CACHE","/var/data/cache/analysis.sqlite"))
 SQLITE_TTL_SEC      = int(os.environ.get("SQLITE_TTL_SEC", "900"))  # 15分鐘快取
 GITHUB_TOKEN        = os.environ.get("GITHUB_TOKEN")  # 私有 repo 才需要，可留空
 
@@ -159,6 +161,8 @@ def get_sqlite_connection(which: str) -> sqlite3.Connection:
         p = _get_cached_sqlite(EQUITY_SQLITE_URL, EQUITY_SQLITE_CACHE)
     elif which == "futures":
         p = _get_cached_sqlite(FUTURES_SQLITE_URL, FUTURES_SQLITE_CACHE)
+    elif which == "analysis":
+        p = _get_cached_sqlite(ANALYSIS_SQLITE_URL, ANALYSIS_SQLITE_CACHE)
     else:
         raise ValueError("which must be 'equity' or 'futures'")
     return sqlite3.connect(str(p))
@@ -231,6 +235,7 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
     # ---- 連線 ----
     con_eq = get_sqlite_connection("equity")
     con_fu = get_sqlite_connection("futures")
+    con_an = get_sqlite_connection("analysis")
 
     try:
         # =========================
@@ -1126,19 +1131,15 @@ def cron_gentables_options():
     sel_str = sel_day.strftime("%Y-%m-%d")
 
     # 2) 讀取 SQLite
-    db_path = Path("選擇權分析資料.sqlite3")
-    if not db_path.exists():
-        abort(500, "DB not found: 選擇權分析資料.sqlite3")
-
-    con = sqlite3.connect(str(db_path))
+    con_an = get_sqlite_connection("analysis")
     try:
-        df_bs = pd.read_sql('select distinct * from options_futures_bs', con)
-        df_daygap = pd.read_sql('select distinct * from df_options_futures_daygap', con)
-        df_putcall = pd.read_sql('select distinct * from putcallsum_sep', con)
-        df_cost = pd.read_sql('select distinct * from df_cost', con)
-        df_limit = pd.read_sql('select distinct * from df_option_limit', con)
+        df_bs = pd.read_sql('select distinct * from options_futures_bs', con_an)
+        df_daygap = pd.read_sql('select distinct * from df_options_futures_daygap', con_an)
+        df_putcall = pd.read_sql('select distinct * from putcallsum_sep', con_an)
+        df_cost = pd.read_sql('select distinct * from df_cost', con_an)
+        df_limit = pd.read_sql('select distinct * from df_option_limit', con_an)
     finally:
-        con.close()
+        con_an.close()
 
     # 3) 選擇日期的數據
     df_sel = df_bs[df_bs["日期"] == sel_str].copy()
