@@ -1160,8 +1160,10 @@ def cron_gentables_options():
     if ref_row.empty and not df_putcall.empty:
         ref_row = df_putcall.sort_values("日期").tail(1).copy()
 
-    call_num = int(ref_row["價平和買權成交價"].iloc[0]) if not ref_row.empty else 0
-    put_num = int(ref_row["價平和賣權成交價"].iloc[0]) if not ref_row.empty else 0
+    call_num = pd.to_numeric(ref_row["價平和買權成交價"].iloc[0], errors="coerce")
+    call_num = 0 if pd.isna(call_num) else float(call_num)  # 需要比較時用 float
+    put_num = pd.to_numeric(ref_row["價平和賣權成交價"].iloc[0], errors="coerce")
+    put_num = 0 if pd.isna(put_num) else float(put_num)
 
     if not gap_day_df.empty:
         # 保留原始單價的絕對值邏輯
@@ -1194,7 +1196,7 @@ def cron_gentables_options():
 
     # 外資成本
     if "外資成本" in df_cost.columns:
-        df_cost["外資成本"] = pd.to_numeric(df_cost["外資成本"], errors="coerce").astype("Int64")
+        df_cost["外資成本"] = pd.to_numeric(df_cost["外資成本"], errors="coerce")
     ref_df = ref_df.merge(df_cost[["日期","外資成本"]], how="left", on="日期")
 
     # 指數漲跌點數（用 FinMind，可設環境變數 FINMIND_TOKEN；取不到就略過）
