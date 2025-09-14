@@ -17,10 +17,11 @@ from plotly.subplots import make_subplots
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 
-# 指定中文字型（Linux 常見安裝字體）
+# 設定全域字型
 matplotlib.rcParams['font.sans-serif'] = ['Noto Sans CJK TC', 'Taipei Sans TC Beta', 'Microsoft JhengHei', 'Heiti TC']
-matplotlib.rcParams['axes.unicode_minus'] = False  # 避免負號顯示成方塊
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
@@ -181,8 +182,8 @@ def _df_to_table_png(df: pd.DataFrame, filename: str, title: Optional[str] = Non
     if title:
         ax.set_title(title, fontsize=14, pad=10)
     tbl = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
-    for key, cell in tbl.get_celld().items():
-        cell.set_fontproperties(matplotlib.font_manager.FontProperties(family="Noto Sans CJK TC", size=10))
+    # for key, cell in tbl.get_celld().items():
+    #     cell.set_fontproperties(matplotlib.font_manager.FontProperties(family="Noto Sans CJK TC", size=10))
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(10)
     tbl.scale(1, 1.2)
