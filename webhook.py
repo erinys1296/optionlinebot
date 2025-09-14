@@ -178,7 +178,7 @@ def _get_cached_sqlite(url: str, cache_path: Path) -> Path:
     _download_to(cache_path, url)
     return cache_path
 
-def get_sqlite_connection(which: str) -> sqlite3.Connection:
+def get_sqlite_connection(which: str) -> sqlite3.con_eq:
     """
     which: 'equity' 或 'futures'
     回傳 sqlite3.connect(...) 連線；呼叫方負責 con.close()
@@ -1110,8 +1110,279 @@ def generate_plot_png(filename: str = "latest.png") -> Path:
         except Exception: pass
 
 def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
-
+    # ---- 連線 ----
+    con_eq = get_sqlite_connection("equity")
+    con_fu = get_sqlite_connection("futures")
+    con_an = get_sqlite_connection("analysis")
+    # ---- 目錄（若未定義 IMAGES_DIR，用預設）----
+    images_dir = globals().get("IMAGES_DIR", Path(os.environ.get("IMAGES_DIR", "/var/data/images")))
+    images_dir.mkdir(parents=True, exist_ok=True)
     try:
+        #週線
+        url = "https://api.finmindtrade.com/api/v4/data?"
+        token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRlIjoiMjAyMy0wNy0zMCAyMzowMTo0MSIsInVzZXJfaWQiOiJqZXlhbmdqYXUiLCJpcCI6IjExNC4zNC4xMjEuMTA0In0.WDAZzKGv4Du5JilaAR7o7M1whpnGaR-vMDuSeTBXhhA", # 參考登入，獲取金鑰
+
+        parameter = {
+        "dataset": "TaiwanStockPrice",
+        "data_id": "TAIEX",
+        "start_date": "2025-05-02",
+        "end_date": datetime.strftime(datetime.today(),'%Y-%m-%d'),
+        "token": token, # 參考登入，獲取金鑰
+        }
+        data = requests.get(url, params=parameter)
+        data = data.json()
+        WeekTAIEXdata = pd.DataFrame(data['data'])
+
+        taiex_fin = pd.DataFrame(data['data'])
+        taiex_fin.date = pd.to_datetime(taiex_fin.date)
+        taiex_fin.index = taiex_fin.date
+        taiex_fin.columns = ['日期', 'stock_id', '成交股數', '成交金額', '開盤指數', '最高指數',
+            '最低指數', '收盤指數', '漲跌點數', '成交筆數']
+
+        #taiex = pd.read_sql("select distinct * from taiex", con_eq, parse_dates=['日期'], index_col=['日期'])
+        #taiex_vol = pd.read_sql("select distinct * from taiex_vol", con_eq, parse_dates=['日期'], index_col=['日期'])
+
+        #taiex
+        #taiex_vol
+        cost_df = pd.read_sql("select distinct Date as [日期], Cost as [外資成本] from cost", con_eq, parse_dates=['日期'], index_col=['日期']).dropna()
+        cost_df["外資成本"] = cost_df["外資成本"].astype('int')
+        limit_df = pd.read_sql("select distinct * from [limit]", con_eq, parse_dates=['日期'], index_col=['日期'])
+
+        inves_limit = limit_df[limit_df["身份別"] == "外資"][['上極限', '下極限']]
+        dealer_limit = limit_df[limit_df["身份別"] == "自營商"][['上極限', '下極限']]
+
+        inves_limit.columns = ["外資上極限","外資下極限"]
+        dealer_limit.columns = ["自營商上極限","自營商下極限"]
+
+        kbars = taiex_fin.join(cost_df).join(dealer_limit).join(inves_limit)
+        enddate = pd.read_sql("select * from end_date order by 最後結算日 desc", con_eq, parse_dates=['最後結算日'])
+
+
+        holidf = pd.read_sql("select * from holiday", con_eq)
+
+        holilist = [str(holiday) for holiday in holidf[~(holidf["說明"].str.contains('開始交易') | holidf["說明"].str.contains('最後交易'))]["日期"].values]
+        #holilist["日期"] = pd.to_datetime(holilist["日期"])
+
+        ordervolumn = pd.read_sql("select distinct * from ordervolumn", con_eq, parse_dates=['日期'], index_col=['日期'])
+        putcallsum = pd.read_sql("select 日期, max(價平和) as 價平和 from putcallsum group by 日期", con_eq, parse_dates=['日期'], index_col=['日期'])
+        putcallsum_month = pd.read_sql("select 日期, max(月選擇權價平和) as 月價平和 from putcallsum_month group by 日期", con_eq, parse_dates=['日期'], index_col=['日期'])
+        putcallgap = pd.read_sql("select 日期, max(價外買賣權價差) as 價外買賣權價差 from putcallgap group by 日期", con_eq, parse_dates=['日期'], index_col=['日期'])
+
+        putcallgap_month = pd.read_sql("select 日期, max(價外買賣權價差) as 月價外買賣權價差 from putcallgap_month group by 日期", con_eq, parse_dates=['日期'], index_col=['日期'])
+
+
+        print(putcallsum_month.tail())
+        kbars = kbars.join(ordervolumn).join(putcallsum).join(putcallsum_month)
+        kbars = kbars.join(putcallgap).join(putcallgap_month)
+
+        # 計算布林帶指標
+        kbars['20MA'] = kbars['收盤指數'].rolling(20).mean()
+        kbars['std'] = kbars['收盤指數'].rolling(20).std()
+        kbars['60MA'] = kbars['收盤指數'].rolling(60).mean()
+        kbars['200MA'] = kbars['收盤指數'].rolling(200).mean()
+
+        kbars = kbars[kbars.index > kbars.index[-100]]
+
+        kbars['upper_band'] = kbars['20MA'] + 2 * kbars['std']
+        kbars['lower_band'] = kbars['20MA'] - 2 * kbars['std']
+        kbars['upper_band1'] = kbars['20MA'] + 1 * kbars['std']
+        kbars['lower_band1'] = kbars['20MA'] - 1 * kbars['std']
+
+
+        kbars['IC'] = kbars['收盤指數'] + 2 * kbars['收盤指數'].shift(1) - kbars['收盤指數'].shift(3) -kbars['收盤指數'].shift(4)
+
+        kbars['月價平和日差'] = kbars['月價平和'] - kbars['月價平和'].shift(1)
+
+        # 在k线基础上计算KDF，并将结果存储在df上面(k,d,j)
+        low_list = kbars['最低指數'].rolling(9, min_periods=9).min()
+        low_list.fillna(value=kbars['最低指數'].expanding().min(), inplace=True)
+        high_list = kbars['最高指數'].rolling(9, min_periods=9).max()
+        high_list.fillna(value=kbars['最高指數'].expanding().max(), inplace=True)
+        rsv = (kbars['收盤指數'] - low_list) / (high_list - low_list) * 100
+        kbars['K'] = pd.DataFrame(rsv).ewm(com=2).mean()
+        kbars['D'] = kbars['K'].ewm(com=2).mean()
+
+        enddatemonth = enddate[~enddate["契約月份"].str.contains("W")]['最後結算日']
+        kbars['end_low'] = 0
+        kbars['end_high'] = 0
+        #print(enddatemonth)
+        #kbars
+        baseline_high = 0
+        baseline_low = 0
+        previous_high = 0
+        previous_low = 0
+        for datei in kbars.index:
+            
+
+            if datei ==enddatemonth[enddatemonth<=datei].max():
+                kbars.loc[datei,'end_low'] =  0
+                kbars.loc[datei,'end_high'] = 0
+                baseline_high = kbars[(kbars.index==datei)]["收盤指數"].values[0]
+                baseline_low = kbars[(kbars.index==datei)]["收盤指數"].values[0]
+                previous_high = 0
+                previous_low = 0
+                current_high = 0
+                current_low = 0
+            else:
+                current_low = kbars[(kbars.index==datei)]["最低指數"].min() - baseline_high
+                current_high = kbars[(kbars.index==datei)]['最高指數'].max() - baseline_low
+                baseline_high = max(baseline_high,kbars[(kbars.index==datei)]["最高指數"].values[0])
+                baseline_low = min(baseline_low,kbars[(kbars.index==datei)]["最低指數"].values[0])
+
+            print(datei,kbars[(kbars.index==datei)]["最低指數"].min(),kbars[(kbars.index==datei)]['最高指數'].max(),current_low,current_high,previous_high,previous_low)
+
+            kbars.loc[datei,'end_high'] =  max(current_high,previous_high)
+            kbars.loc[datei,'end_low'] = min(current_low,previous_low)
+
+            
+            previous_high = max(current_high,previous_high)
+            previous_low = min(current_low,previous_low)
+
+            
+        kbars["MAX_MA"] = kbars["最高指數"] - kbars["20MA"]
+        kbars["MIN_MA"] = kbars["最低指數"] - kbars["20MA"]
+
+        #詢問
+        ds = 2
+        kbars['uline'] = kbars['最高指數'].rolling(ds, min_periods=1).max()
+        kbars['dline'] = kbars['最低指數'].rolling(ds, min_periods=1).min()
+
+        kbars["all_kk"] = 0
+        barssince5 = 0
+        barssince6 = 0
+        kbars['labelb'] = 1
+        kbars = kbars[~kbars.index.duplicated(keep='first')]
+        for i in range(2,len(kbars.index)):
+            try:
+                #(kbars.loc[kbars.index[i],'收盤指數'] > kbars.loc[kbars.index[i-1],"uline"])
+                condition51 = (kbars.loc[kbars.index[i-1],"最高指數"] < kbars.loc[kbars.index[i-2],"最低指數"] ) and (kbars.loc[kbars.index[i],"最低指數"] > kbars.loc[kbars.index[i-1],"最高指數"] )
+                #condition52 = (kbars.loc[kbars.index[i-1],'收盤指數'] < kbars.loc[kbars.index[i-2],"最低指數"]) and (kbars.loc[kbars.index[i-1],'成交金額'] > kbars.loc[kbars.index[i-2],'成交金額']) and (kbars.loc[kbars.index[i],'收盤指數']>kbars.loc[kbars.index[i-1],"最高指數"] )
+                condition53 = (kbars.loc[kbars.index[i],'收盤指數'] > kbars.loc[kbars.index[i-1],"uline"]) and (kbars.loc[kbars.index[i-1],'收盤指數'] <= kbars.loc[kbars.index[i-1],"uline"])
+
+                condition61 = (kbars.loc[kbars.index[i-1],"最低指數"] > kbars.loc[kbars.index[i-2],"最高指數"] ) and (kbars.loc[kbars.index[i],"最高指數"] < kbars.loc[kbars.index[i-1],"最低指數"] )
+                #condition62 = (kbars.loc[kbars.index[i-1],'收盤指數'] > kbars.loc[kbars.index[i-2],"最高指數"]) and (kbars.loc[kbars.index[i-1],'成交金額'] > kbars.loc[kbars.index[i-2],'成交金額']) and (kbars.loc[kbars.index[i],'收盤指數']<kbars.loc[kbars.index[i-1],"最低指數"] )
+                condition63 = (kbars.loc[kbars.index[i],'收盤指數'] < kbars.loc[kbars.index[i-1],"dline"]) and (kbars.loc[kbars.index[i-1],'收盤指數'] >= kbars.loc[kbars.index[i-1],"dline"])
+            except:
+                condition51 = True
+                condition52 = True
+                condition53 = True
+                condition61 = True
+                condition63 = True
+            condition54 = condition51 or condition53 #or condition52
+            condition64 = condition61 or condition63 #or condition62 
+
+            #kbars['labelb'] = np.where((kbars['收盤指數']> kbars['upper_band1']) , 1, np.where((kbars['收盤指數']< kbars['lower_band1']),-1,1))
+
+            #print(i)
+            if kbars.loc[kbars.index[i],'收盤指數'] > kbars.loc[kbars.index[i],'upper_band1']:
+                kbars.loc[kbars.index[i],'labelb'] = 1
+            elif kbars.loc[kbars.index[i],'收盤指數'] < kbars.loc[kbars.index[i],'lower_band1']:
+                kbars.loc[kbars.index[i],'labelb'] = -1
+            else:
+                kbars.loc[kbars.index[i],'labelb'] = kbars.loc[kbars.index[i-1],'labelb']
+
+            if condition54 == True:
+                barssince5 = 1
+            else:
+                barssince5 += 1
+
+            if condition64 == True:
+                barssince6 = 1
+            else:
+                barssince6 += 1
+
+
+            if barssince5 < barssince6:
+                kbars.loc[kbars.index[i],"all_kk"] = 1
+            else:
+                kbars.loc[kbars.index[i],"all_kk"] = -1
+
+
+        max_days20_list =  []
+        max_days20_x = []
+        min_days20_list =  []
+        min_days20_x = []
+
+        for dateidx in range(0,len(kbars.index[-59:])):
+
+            try:
+                datei = kbars.index[-59:][dateidx]
+                days19 = kbars[(kbars.index> kbars.index[-79:][dateidx]) & (kbars.index<datei )]
+                max_days19 = days19["九點累積委託賣出數量"].values.max()
+                min_days19 = days19["九點累積委託賣出數量"].values.min()
+                curday = kbars[kbars.index == datei]["九點累積委託賣出數量"].values[0]
+                yesday = kbars[kbars.index == kbars.index[-59:][dateidx-1]]["九點累積委託賣出數量"].values[0]
+                tomday = kbars[kbars.index == kbars.index[-59:][dateidx+1]]["九點累積委託賣出數量"].values[0]
+
+                if curday >= max_days19 and curday > yesday and curday > tomday:
+                    max_days20_list.append(curday)
+                    max_days20_x.append(datei)
+
+                if curday <= min_days19 and curday < yesday and curday < tomday:
+                    min_days20_list.append(curday)
+                    min_days20_x.append(datei)
+            except:
+                pass
+
+        
+
+        #max_days20_list
+        #max_days20
+
+        #max_days20_x
+        notshowdate = []
+        for datei in enddate[~enddate["契約月份"].str.contains("W")]['最後結算日']:
+            try:
+                kbarsdi = np.where(kbars.index == datei)[0]
+                notshowdate.append(kbars.index[kbarsdi+1][0])
+            except:
+                continue
+        #kbars = kbars.dropna()
+        kbars = kbars[kbars.index > kbars.index[-60]]
+
+
+        def fillcol(label):
+            if label >= 1:
+                return 'rgba(0,250,0,0.2)'
+            else:
+                return 'rgba(0,256,256,0.2)'
+
+        ICdate = []
+        datechecki = 1
+        #(kbars['IC'].index[-1] + timedelta(days = 1)).weekday() == 5
+        while (kbars['IC'].index[-1] + timedelta(days = datechecki)).weekday() in [5,6] or (kbars['IC'].index[-1] + timedelta(days = datechecki)) in pd.to_datetime(holidf["日期"]).values:
+            datechecki +=1
+        ICdate.append((kbars['IC'].index[-1] + timedelta(days = datechecki)))
+        datechecki +=1
+        while (kbars['IC'].index[-1] + timedelta(days = datechecki)).weekday() in [5,6] or (kbars['IC'].index[-1] + timedelta(days = datechecki)) in pd.to_datetime(holidf["日期"]).values:
+            datechecki +=1
+        ICdate.append((kbars['IC'].index[-1] + timedelta(days = datechecki)))
+
+
+
+        #[kbars['IC'].index[-1] + timedelta(days = 1),kbars['IC'].index[-1] + timedelta(days = 2)]
+
+        CPratio = pd.read_sql("select distinct * from putcallratio", con_eq, parse_dates=['日期'], index_col=['日期'])
+        CPratio = CPratio[CPratio.index>kbars.index[0]]
+
+        bank8 = pd.read_sql("select distinct * from bank", con_eq, parse_dates=['日期'], index_col=['日期'])
+        bank8 = bank8[bank8.index>kbars.index[0]]
+
+        dfMTX = pd.read_sql("select distinct * from dfMTX", con_eq, parse_dates=['Date'], index_col=['Date'])
+        dfMTX = dfMTX[dfMTX.index>kbars.index[0]]
+
+        futdf = pd.read_sql("select distinct * from futdf", con_eq, parse_dates=['日期'], index_col=['日期'])
+        futdf = futdf[futdf.index>kbars.index[0]]
+
+        TXOOIdf = pd.read_sql("select distinct * from TXOOIdf", con_eq, parse_dates=['日期'], index_col=['日期'])
+        TXOOIdf = TXOOIdf[TXOOIdf.index>kbars.index[0]]
+
+        dfbuysell = pd.read_sql("select distinct * from dfbuysell order by Date", con_eq, parse_dates=['Date'], index_col=['Date'])
+        dfbuysell = dfbuysell[dfbuysell.index>kbars.index[0]]
+
+        dfMargin = pd.read_sql("select distinct * from dfMargin order by Date", con_eq, parse_dates=['Date'], index_col=['Date'])
+        dfMargin = dfMargin[dfMargin.index>kbars.index[0]]
+
         options_vice = [ True ]*4
 
         optvn = 0
@@ -1131,7 +1402,7 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
 
 
         #subtitle
-        enddate = pd.read_sql("select * from end_date", connection, parse_dates=['最後結算日'])
+        enddate = pd.read_sql("select * from end_date", con_eq, parse_dates=['最後結算日'])
 
 
         rowcount = optvn + 1 + 8 + 2
@@ -1603,7 +1874,7 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
 
         out = images_dir / filename
         tmp = out.with_suffix(".png.tmp")
-        fig3_1.write_image(str(tmp), format="png", scale=2)   # 需要 plotly + kaleido (+ Chrome)
+        fig.write_image(str(tmp), format="png", scale=2)   # 需要 plotly + kaleido (+ Chrome)
         os.replace(tmp, out)
         return out
 
@@ -1812,8 +2083,40 @@ def cron_gentables_options():
 
     return jsonify(ok=True, date=sel_str, files=[p.name for p in imgs], urls=urls)
 
+@app.route("/cron/genplot_main", methods=["GET", "POST"])
+def cron_genplot_main():
+    """
+    產生主圖 (generate_plot_png_main) 並存檔
+    Query:
+      - filename: 檔名（預設 main.png）
+    """
+    _require_key()
+    filename = request.args.get("filename", "main.png")
+    p = generate_plot_png_main(filename)   # 這裡呼叫你自己寫好的 function
+    base = _public_base()
+    url = f"{base}/images/{p.name}"
+    return jsonify(ok=True, file=p.name, url=url)
 
+@app.route("/cron/push_main", methods=["GET", "POST"])
+def cron_push_main():
+    """
+    推播 generate_plot_png_main 產生的圖
+    Query:
+      - filename: 檔名（預設 main.png）
+    """
+    _require_key()
+    filename = request.args.get("filename", "main.png")
+    p = IMAGES_DIR / filename
+    if not p.exists():
+        # 沒檔案時就先呼叫生成
+        with app.test_request_context(f"/cron/genplot_main?key={CRON_KEY}&filename={filename}"):
+            resp = cron_genplot_main().json
+        url = resp["url"]
+    else:
+        url = f"{_public_base()}/images/{filename}"
 
+    count = _push_images_to_whitelist([url])
+    return f"OK, pushed main plot to whitelist ({count} image sent)."
 
 @app.route("/images/<path:fname>", methods=["GET"])
 def serve_image(fname):
