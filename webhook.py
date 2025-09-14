@@ -1210,8 +1210,8 @@ def cron_gentables_options():
     num_i = 0
     day_i = 0
     while num_i < num_days:
-        gap_day_df = df_daygap[df_daygap["日期"] ==datetime.strftime(selected_date - timedelta(days=day_i), '%Y-%m-%d') ]
-        callputtemp = df_putcall[df_putcall["日期"] ==datetime.strftime(selected_date - timedelta(days=day_i), '%Y-%m-%d')]
+        gap_day_df = df_daygap[df_daygap["日期"] ==datetime.strftime(sel_day - timedelta(days=day_i), '%Y-%m-%d') ]
+        callputtemp = df_putcall[df_putcall["日期"] ==datetime.strftime(sel_day - timedelta(days=day_i), '%Y-%m-%d')]
         day_i += 1
         if len(gap_day_df) !=0:
             num_i += 1
@@ -1257,14 +1257,22 @@ def cron_gentables_options():
     ref_df = ref_df.merge(df_cost[["日期","外資成本"]], how="left", on="日期")
 
     # 指數漲跌點數（用 FinMind，可設環境變數 FINMIND_TOKEN；取不到就略過）
-    taiex_map = _fetch_taiex_delta_map(sel_str, sel_str)
-    ref_df["漲跌點數"] = ref_df["日期"].map(taiex_map) if taiex_map else pd.NA
+    callputtemp = df_putcall[(df_putcall["日期"] <=datetime.strftime(sel_day, '%Y-%m-%d'))]
+    callputtemp = callputtemp[callputtemp["日期"] >=datetime.strftime(sel_day - timedelta(days=day_i-1), '%Y-%m-%d')]
+    callputtemp = callputtemp.sort_values(by="日期",ascending=False)
+    callputtemp = callputtemp.reset_index(drop=True)
+    callputtemp.columns = ["日期","價平和履約價","價平和買權成交價","價平和賣權成交價"]
+    df_cost["外資成本"] = df_cost["外資成本"].astype(int)
 
-    # 6) 上下極限（只取當天）
-    limit_df = df_limit[df_limit["日期"] == sel_str].copy()
-    # 若有『身份別』欄位，常用外資
-    if "身份別" in limit_df.columns:
-        limit_df = limit_df[limit_df["身份別"].isin(["外資","自營商","散戶"])].copy()
+    callputtemp = callputtemp.join(df_cost.set_index("日期"),on="日期")
+
+
+    df_option_limit = pd.read_sql("select distinct * from df_option_limit", con_an)
+    limit_temp = df_option_limit[(df_option_limit["日期"] <=datetime.strftime(sel_day, '%Y-%m-%d'))]
+    limit_temp = limit_temp[limit_temp["日期"] >=datetime.strftime(sel_day - timedelta(days=day_i-1), '%Y-%m-%d')]
+    limit_temp = limit_temp.sort_values(by="日期",ascending=False)
+    limit_temp = limit_temp.reset_index(drop=True)
+
 
     # 7) 轉成 PNG（共 1 + 3 + 1 + 1 = 最多 6 張）
     imgs = []
@@ -1287,9 +1295,9 @@ def cron_gentables_options():
     imgs.append(_safe_png(dealer_df,  f"opt_day_dealer.png",  f"日變動：自營商（{sel_str}）"))
     imgs.append(_safe_png(retail_df,  f"opt_day_retail.png",  f"日變動：散戶（{sel_str}）"))
 
-    imgs.append(_safe_png(ref_df,     f"opt_ref.png",         f"參考數據（{sel_str}）"))
+    imgs.append(_safe_png(callputtemp ,     f"opt_ref.png",         f"參考數據（{sel_str}）"))
 
-    imgs.append(_safe_png(limit_df,   f"opt_limit.png",       f"上下極限（{sel_str}）"))
+    imgs.append(_safe_png(limit_temp,   f"opt_limit.png",       f"上下極限（{sel_str}）"))
 
     base = _public_base()
     urls = [f"{base}/images/{p.name}" for p in imgs]
