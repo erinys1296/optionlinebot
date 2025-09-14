@@ -22,7 +22,7 @@ import matplotlib
 
 # --- 專案隨包字型（Variable TrueType） ---
 # 檔案放在 fonts/NotoSansTC-VariableFont_wght.ttf
-_FONT_PATH = Path(__file__).parent / "fonts" / "NotoSansTC-VariableFont_wght.ttf"
+_FONT_PATH = Path(__file__).parent / "NotoSansTC-VariableFont_wght.ttf"
 if not _FONT_PATH.exists():
     # 沒有檔案也不要讓程式掛掉；只是會顯示方框
     print(f"[warn] font not found: {_FONT_PATH}")
