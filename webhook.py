@@ -18,6 +18,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+# 指定中文字型（Linux 常見安裝字體）
+matplotlib.rcParams['font.sans-serif'] = ['Noto Sans CJK TC', 'Taipei Sans TC Beta', 'Microsoft JhengHei', 'Heiti TC']
+matplotlib.rcParams['axes.unicode_minus'] = False  # 避免負號顯示成方塊
+
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
@@ -177,6 +181,8 @@ def _df_to_table_png(df: pd.DataFrame, filename: str, title: Optional[str] = Non
     if title:
         ax.set_title(title, fontsize=14, pad=10)
     tbl = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
+    for key, cell in tbl.get_celld().items():
+        cell.set_fontproperties(matplotlib.font_manager.FontProperties(family="Noto Sans CJK TC", size=10))
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(10)
     tbl.scale(1, 1.2)
@@ -1224,14 +1230,15 @@ def cron_gentables_options():
             tmp = pd.DataFrame({"訊息": [f"{sel_str} 無資料"]})
             return _df_to_table_png(tmp, fname, title=title)
         return _df_to_table_png(df.reset_index(drop=True), fname, title=title)
+    # 7. 存檔（固定檔名，覆蓋）
+    
+    imgs.append(_safe_png(foreign_df, f"opt_day_foreign.png", f"日變動：外資（{sel_str}）"))
+    imgs.append(_safe_png(dealer_df,  f"opt_day_dealer.png",  f"日變動：自營商（{sel_str}）"))
+    imgs.append(_safe_png(retail_df,  f"opt_day_retail.png",  f"日變動：散戶（{sel_str}）"))
 
-    imgs.append(_safe_png(foreign_df, f"opt_day_foreign_{tag}.png", f"日變動：外資（{sel_str}）"))
-    imgs.append(_safe_png(dealer_df,  f"opt_day_dealer_{tag}.png",  f"日變動：自營商（{sel_str}）"))
-    imgs.append(_safe_png(retail_df,  f"opt_day_retail_{tag}.png",  f"日變動：散戶（{sel_str}）"))
+    imgs.append(_safe_png(ref_df,     f"opt_ref.png",         f"參考數據（{sel_str}）"))
 
-    imgs.append(_safe_png(ref_df,     f"opt_ref_{tag}.png",         f"參考數據（{sel_str}）"))
-
-    imgs.append(_safe_png(limit_df,   f"opt_limit_{tag}.png",       f"上下極限（{sel_str}）"))
+    imgs.append(_safe_png(limit_df,   f"opt_limit.png",       f"上下極限（{sel_str}）"))
 
     base = _public_base()
     urls = [f"{base}/images/{p.name}" for p in imgs]
