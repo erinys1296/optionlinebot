@@ -130,7 +130,7 @@ def _ensure_main_png() -> str:
 
 def _ensure_tables_pngs() -> list[str]:
     """產表格並回傳圖片 URL 陣列（覆蓋固定檔名）"""
-    paths = generate_options_tables()     # 之前我們做的函式，回傳 List[Path]
+    paths = cron_gentables_options()     # 之前我們做的函式，回傳 List[Path]
     return [_url_for_file(p.name) for p in paths]
 
 def _bootstrap_storage():
@@ -1562,24 +1562,24 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
         fig.add_trace(go.Scatter(x=kbars.index,
                                 y=kbars['20MA'],
                                 mode='lines',
-                                line=dict(color='green'),
+                                line=dict(color='green', width=0.5),
                                 name='20MA'),row=1, col=1, secondary_y= True)
 
         fig.add_trace(go.Scatter(x=list(kbars['IC'].index)[2:]+ICdate,
                                 y=kbars['IC'].values,
                                 mode='lines',
-                                line=dict(color='orange'),
+                                line=dict(color='orange', width=0.5),
                                 name='IC操盤線'),row=1, col=1, secondary_y= True)
         
         fig.add_trace(go.Scatter(x=kbars.index,
                                 y=kbars['200MA'],
                                 mode='lines',
-                                line=dict(color='blue'),
+                                line=dict(color='blue', width=0.5),
                                 name='MA200'),row=1, col=1, secondary_y= True)
         fig.add_trace(go.Scatter(x=kbars.index,
                                 y=kbars['60MA'],
                                 mode='lines',
-                                line=dict(color='orange'),
+                                line=dict(color='orange', width=0.5),
                                 name='MA60'),row=1, col=1, secondary_y= True)
 
     
@@ -1693,7 +1693,9 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
             min_days20 = days20["九點累積委託賣出數量"].values.min()
             
             #volume_colors = [increasing_color if kbars['九點累積委託賣出數量'][i] > kbars['收盤指數'][i-1] else decreasing_color for i in range(len(kbars['收盤指數']))]
-            fig.add_trace(go.Scatter(x=kbars.index, y=kbars['九點累積委託賣出數量'], name='成交數量',showlegend=False), row=optvrank[0], col=1)
+            fig.add_trace(go.Scatter(x=kbars.index, y=kbars['九點累積委託賣出數量'],
+                                     line=dict(width=0.5),
+                                      name='成交數量',showlegend=False), row=optvrank[0], col=1)
             fig.add_scatter(x=np.array(max_days20_x), y=np.array(max_days20_list),marker=dict(color = blue_color,size=5),showlegend=False,mode = 'markers', row=optvrank[0], col=1)
             fig.add_scatter(x=np.array(min_days20_x), y=np.array(min_days20_list),marker=dict(color = orange_color,size=5),showlegend=False,mode = 'markers', row=optvrank[0], col=1)
             
@@ -1839,7 +1841,7 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
         TaiwanExchangeRate.date = pd.to_datetime(TaiwanExchangeRate.date)
         TaiwanExchangeRate = TaiwanExchangeRate[~(TaiwanExchangeRate['spot_buy']==-1)]
 
-        fig.add_trace(go.Scatter(x=TaiwanExchangeRate[(TaiwanExchangeRate.date>kbars.index[0])&(TaiwanExchangeRate.date!=datetime.strptime('2023-08-03', '%Y-%m-%d'))].date, y=TaiwanExchangeRate[(TaiwanExchangeRate.date>kbars.index[0])&(TaiwanExchangeRate.date!=datetime.strptime('2023-08-03', '%Y-%m-%d'))]['spot_buy'],marker=dict(color = gray_color), name='ExchangeRate',line_width=3,showlegend=False), row=charti+5, col=1)
+        fig.add_trace(go.Scatter(x=TaiwanExchangeRate[(TaiwanExchangeRate.date>kbars.index[0])&(TaiwanExchangeRate.date!=datetime.strptime('2023-08-03', '%Y-%m-%d'))].date, y=TaiwanExchangeRate[(TaiwanExchangeRate.date>kbars.index[0])&(TaiwanExchangeRate.date!=datetime.strptime('2023-08-03', '%Y-%m-%d'))]['spot_buy'],marker=dict(color = gray_color,width=0.5), name='ExchangeRate',line_width=3,showlegend=False), row=charti+5, col=1)
         fig.update_yaxes(title_text="美元匯率", row=charti+5, col=1)  
 
         token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRlIjoiMjAyMy0wNy0zMCAyMzowMTo0MSIsInVzZXJfaWQiOiJqZXlhbmdqYXUiLCJpcCI6IjExNC4zNC4xMjEuMTA0In0.WDAZzKGv4Du5JilaAR7o7M1whpnGaR-vMDuSeTBXhhA"
@@ -1881,7 +1883,11 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
             dragmode = 'drawline',
             hoverlabel=dict(align='left',bgcolor='rgba(255,255,255,0.5)',font=dict(color='black')),
             legend_traceorder="reversed",
-            
+            font=dict(
+            family="Noto Sans TC",   # 全域字型
+            size=12,
+            color="black"
+            )
         )
 
         fig.update_traces(xaxis='x1',hoverlabel=dict(align='left'))
