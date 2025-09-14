@@ -2296,13 +2296,25 @@ def on_message(event: MessageEvent):
         return
 
     elif key in ("資料", "数据", "表格", "tables"):
-        cron_push_options_tables()
-        # urls = _ensure_tables_pngs()
-        # if urls:
-        #     _reply_images(event.reply_token, urls)
-        #     if len(urls) > 5:
-        #         _push_images_to_user(uid, urls[5:])
+        try:
+            # 生成表格
+            with app.test_request_context(f"/cron/gentables_options?key={CRON_KEY}"):
+                resp = cron_gentables_options().json
+            
+            urls = resp.get("urls", [])
+            if urls:
+                # 回覆前5張圖片
+                _reply_images(event.reply_token, urls[:5])
+                # 如果超過5張，用push方式發送剩餘的
+                if len(urls) > 5:
+                    _push_images_to_user(uid, urls[5:])
+            else:
+                reply("抱歉，無法生成表格資料。")
+        except Exception as e:
+            logger.error("Generate tables error: %s", e)
+            reply("生成表格時發生錯誤，請稍後再試。")
         return
+
     # 導引
     reply(
         "嗨！\n"
