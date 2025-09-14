@@ -178,7 +178,7 @@ def _get_cached_sqlite(url: str, cache_path: Path) -> Path:
     _download_to(cache_path, url)
     return cache_path
 
-def get_sqlite_connection(which: str) -> sqlite3.con_eq:
+def get_sqlite_connection(which: str) -> sqlite3.connection:
     """
     which: 'equity' 或 'futures'
     回傳 sqlite3.connect(...) 連線；呼叫方負責 con.close()
