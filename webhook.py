@@ -1157,7 +1157,7 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
         parameter = {
         "dataset": "TaiwanStockPrice",
         "data_id": "TAIEX",
-        "start_date": "2025-05-02",
+        "start_date": "2025-03-02",
         "end_date": datetime.strftime(datetime.today(),'%Y-%m-%d'),
         "token": token, # 參考登入，獲取金鑰
         }
@@ -2261,7 +2261,40 @@ def on_message(event: MessageEvent):
     if text in ["狀態", "status"]:
         reply("目前狀態：{}".format("✅ 已訂閱" if uid in wl else "未訂閱"))
         return
+    
+    # 如果沒有 user_id 或不在白名單 → 拒絕
+    if not uid or uid not in wl:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="抱歉，你沒有權限使用這個功能。")
+        )
+        # 導引
+        reply(
+            f"若要接收定時通知和使用查詢功能，請輸入：\n「註冊 <驗證碼>」\n"
+            "取消請輸入：「取消訂閱」\n"
+            "查詢請輸入：「狀態」"
+        )
+        return
 
+    key = text.replace(" ", "").replace("\u3000","")
+
+    if key in ("即時盤", "即時盘", "即時", "盤中"):
+        url = _ensure_latest_png()
+        _reply_images(event.reply_token, [url])
+        return
+
+    elif key in ("主圖", "主图", "main"):
+        url = _ensure_main_png()
+        _reply_images(event.reply_token, [url])
+        return
+
+    elif key in ("資料", "数据", "表格", "tables"):
+        urls = _ensure_tables_pngs()
+        if urls:
+            _reply_images(event.reply_token, urls)
+            if len(urls) > 5:
+                _push_images_to_user(uid, urls[5:])
+        return
     # 導引
     reply(
         "嗨！\n"
