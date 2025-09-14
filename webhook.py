@@ -2296,11 +2296,12 @@ def on_message(event: MessageEvent):
         return
 
     elif key in ("資料", "数据", "表格", "tables"):
-        urls = _ensure_tables_pngs()
-        if urls:
-            _reply_images(event.reply_token, urls)
-            if len(urls) > 5:
-                _push_images_to_user(uid, urls[5:])
+        cron_push_options_tables()
+        # urls = _ensure_tables_pngs()
+        # if urls:
+        #     _reply_images(event.reply_token, urls)
+        #     if len(urls) > 5:
+        #         _push_images_to_user(uid, urls[5:])
         return
     # 導引
     reply(
