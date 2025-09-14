@@ -23,15 +23,27 @@ import matplotlib
 # --- 專案隨包字型（Variable TrueType） ---
 # 檔案放在 fonts/NotoSansTC-VariableFont_wght.ttf
 _FONT_PATH = Path(__file__).parent / "NotoSansTC-VariableFont_wght.ttf"
-if not _FONT_PATH.exists():
-    # 沒有檔案也不要讓程式掛掉；只是會顯示方框
-    print(f"[warn] font not found: {_FONT_PATH}")
-else:
+def _load_cjk_prop():
+    if not _FONT_PATH.exists():
+        print(f"[warn] CJK font not found: {_FONT_PATH}")
+        return None
+    # 1) 註冊到 fontManager
     font_manager.fontManager.addfont(str(_FONT_PATH))
-    _CJK_PROP = font_manager.FontProperties(fname=str(_FONT_PATH))
-    # 設定成全域預設字型（避免警告 & 讓標題/表格預設就吃到）
-    matplotlib.rcParams["font.family"] = _CJK_PROP.get_name()   # 例如會變成 "Noto Sans TC"
-    matplotlib.rcParams["axes.unicode_minus"] = False           # 避免負號變方塊
+    # 2) 強制重建快取，避免舊 cache 讓 matplotlib 還是用 DejaVu
+    try:
+        font_manager._load_fontmanager(try_read_cache=False)  # matplotlib 3.7+
+    except Exception:
+        pass
+    # 3) 建 FontProperties
+    prop = font_manager.FontProperties(fname=str(_FONT_PATH))
+    # 4) 設成全域：家族= sans-serif，候選只有我們這顆
+    matplotlib.rcParams["font.family"] = "sans-serif"
+    matplotlib.rcParams["font.sans-serif"] = [prop.get_name()]
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    print(f"[font] using: {prop.get_name()} @ {_FONT_PATH}")
+    return prop
+
+_CJK_PROP = _load_cjk_prop()
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
@@ -187,26 +199,27 @@ def _df_to_table_png(df: pd.DataFrame, filename: str, title: Optional[str] = Non
     h = max(2.5, 0.55 * (len(df) + 2))
     w = min(22, max(6, len(df.columns) * 1.2))
     fig, ax = plt.subplots(figsize=(w, h), dpi=180)
-    # 這裡再次建 prop；若檔案不存在就退回預設（仍可運作）
-    prop = font_manager.FontProperties(fname=str(_FONT_PATH)) if _FONT_PATH.exists() else None
-
+  
     ax.axis('off')
     if title:
-        if prop:
-            ax.set_title(title, fontsize=14, pad=10, fontproperties=prop)
+        if _CJK_PROP:
+            ax.set_title(title, fontsize=14, pad=10, fontproperties=_CJK_PROP)
         else:
             ax.set_title(title, fontsize=14, pad=10)
 
-    tbl = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
+    tbl = ax.table(cellText=df.values,
+                   colLabels=df.columns,
+                   cellLoc='center',
+                   loc='center')
     tbl.auto_set_font_size(False)
     tbl.set_fontsize(10)
     tbl.scale(1, 1.2)
-    tbl = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
-    # for key, cell in tbl.get_celld().items():
-    #     cell.set_fontproperties(matplotlib.font_manager.FontProperties(family="Noto Sans CJK TC", size=10))
-    tbl.auto_set_font_size(False)
-    tbl.set_fontsize(10)
-    tbl.scale(1, 1.2)
+
+    # 逐格把字型套上（正確 API：get_text().set_fontproperties）
+    if _CJK_PROP:
+        for _, cell in tbl.get_celld().items():
+            cell.get_text().set_fontproperties(_CJK_PROP)
+
     out = IMAGES_DIR / filename
     plt.tight_layout()
     fig.savefig(out, bbox_inches='tight')
@@ -1192,25 +1205,42 @@ def cron_gentables_options():
     put_num = pd.to_numeric(ref_row["價平和賣權成交價"].iloc[0], errors="coerce")
     put_num = 0 if pd.isna(put_num) else float(put_num)
 
-    if not gap_day_df.empty:
-        # 保留原始單價的絕對值邏輯
-        gap_day_df = gap_day_df.copy()
-        gap_day_df["成交位置"] = ""
-        # 單價有可能是字串，先轉數值
-        gap_day_df["單價"] = pd.to_numeric(gap_day_df["單價"], errors="coerce").fillna(0)
-        for idx in gap_day_df.index:
-            k = gap_day_df.at[idx, "種類"]
-            px = abs(gap_day_df.at[idx, "單價"])
-            if k == "買權":
-                gap_day_df.at[idx, "成交位置"] = "價內" if px > call_num else "價外"
-            elif k == "賣權":
-                gap_day_df.at[idx, "成交位置"] = "價內" if px > put_num else "價外"
-            else:
-                gap_day_df.at[idx, "成交位置"] = "不分"
+     #for i in range(num_days):
+    num_days = 7
+    num_i = 0
+    day_i = 0
+    while num_i < num_days:
+        gap_day_df = df_daygap[df_daygap["日期"] ==datetime.strftime(selected_date - timedelta(days=day_i), '%Y-%m-%d') ]
+        callputtemp = df_putcall[df_putcall["日期"] ==datetime.strftime(selected_date - timedelta(days=day_i), '%Y-%m-%d')]
+        day_i += 1
+        if len(gap_day_df) !=0:
+            num_i += 1
+            call_num = int(callputtemp["價平和買權成交價"])
+            put_num = int(callputtemp["價平和賣權成交價"])
+            gap_day_df["成交位置"]=""
+            for idx in gap_day_df.index:
+                if gap_day_df.loc[idx,"種類"]=="買權":
+                    if np.abs(gap_day_df.loc[idx,"單價"])>call_num:
+                        gap_day_df.loc[idx,"成交位置"] = "價內"
+                    else:
+                        gap_day_df.loc[idx,"成交位置"] = "價外"
 
-    foreign_df = gap_day_df[gap_day_df["身份"] == "外資"].copy()
-    dealer_df  = gap_day_df[gap_day_df["身份"] == "自營商"].copy()
-    retail_df  = gap_day_df[gap_day_df["身份"] == "散戶"].copy()
+                elif gap_day_df.loc[idx,"種類"]=="賣權":
+                    if np.abs(gap_day_df.loc[idx,"單價"])>put_num:
+                        gap_day_df.loc[idx,"成交位置"] = "價內"
+                    else:
+                        gap_day_df.loc[idx,"成交位置"] = "價外"
+
+                else:
+                    gap_day_df.loc[idx,"成交位置"] = "不分"
+                    
+                #gap_day_df.loc[idx,"成交位置"]
+            foreign_df = pd.concat([foreign_df,gap_day_df[gap_day_df["身份"]=="外資"]])
+            dealer_df = pd.concat([dealer_df,gap_day_df[gap_day_df["身份"]=="自營商"]])
+            retail_df = pd.concat([retail_df,gap_day_df[gap_day_df["身份"]=="散戶"]])
+            #foreign_df = foreign_df.append(gap_day_df[gap_day_df["身份"]=="外資"])
+            #dealer_df = dealer_df.append(gap_day_df[gap_day_df["身份"]=="自營商"])
+            #retail_df = retail_df.append(gap_day_df[gap_day_df["身份"]=="散戶"])
 
     # 5) 參考數據（僅當天）
     ref_df = df_putcall[df_putcall["日期"] == sel_str].copy()
