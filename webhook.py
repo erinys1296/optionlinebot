@@ -18,11 +18,20 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
+import matplotlib
 
-# 設定全域字型
-matplotlib.rcParams['font.sans-serif'] = ['Noto Sans CJK TC', 'Taipei Sans TC Beta', 'Microsoft JhengHei', 'Heiti TC']
-matplotlib.rcParams['axes.unicode_minus'] = False
-
+# --- 專案隨包字型（Variable TrueType） ---
+# 檔案放在 fonts/NotoSansTC-VariableFont_wght.ttf
+_FONT_PATH = Path(__file__).parent / "fonts" / "NotoSansTC-VariableFont_wght.ttf"
+if not _FONT_PATH.exists():
+    # 沒有檔案也不要讓程式掛掉；只是會顯示方框
+    print(f"[warn] font not found: {_FONT_PATH}")
+else:
+    font_manager.fontManager.addfont(str(_FONT_PATH))
+    _CJK_PROP = font_manager.FontProperties(fname=str(_FONT_PATH))
+    # 設定成全域預設字型（避免警告 & 讓標題/表格預設就吃到）
+    matplotlib.rcParams["font.family"] = _CJK_PROP.get_name()   # 例如會變成 "Noto Sans TC"
+    matplotlib.rcParams["axes.unicode_minus"] = False           # 避免負號變方塊
 # ========= 設定 =========
 CHANNEL_ACCESS_TOKEN = os.environ["LINE_CHANNEL_ACCESS_TOKEN"]
 CHANNEL_SECRET = os.environ["LINE_CHANNEL_SECRET"]
@@ -178,9 +187,20 @@ def _df_to_table_png(df: pd.DataFrame, filename: str, title: Optional[str] = Non
     h = max(2.5, 0.55 * (len(df) + 2))
     w = min(22, max(6, len(df.columns) * 1.2))
     fig, ax = plt.subplots(figsize=(w, h), dpi=180)
+    # 這裡再次建 prop；若檔案不存在就退回預設（仍可運作）
+    prop = font_manager.FontProperties(fname=str(_FONT_PATH)) if _FONT_PATH.exists() else None
+
     ax.axis('off')
     if title:
-        ax.set_title(title, fontsize=14, pad=10)
+        if prop:
+            ax.set_title(title, fontsize=14, pad=10, fontproperties=prop)
+        else:
+            ax.set_title(title, fontsize=14, pad=10)
+
+    tbl = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
+    tbl.auto_set_font_size(False)
+    tbl.set_fontsize(10)
+    tbl.scale(1, 1.2)
     tbl = ax.table(cellText=df.values, colLabels=df.columns, cellLoc='center', loc='center')
     # for key, cell in tbl.get_celld().items():
     #     cell.set_fontproperties(matplotlib.font_manager.FontProperties(family="Noto Sans CJK TC", size=10))
