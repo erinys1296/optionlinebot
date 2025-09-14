@@ -1206,6 +1206,9 @@ def cron_gentables_options():
     put_num = 0 if pd.isna(put_num) else float(put_num)
 
      #for i in range(num_days):
+    foreign_df = pd.DataFrame()
+    dealer_df = pd.DataFrame()
+    retail_df = pd.DataFrame()
     num_days = 7
     num_i = 0
     day_i = 0
