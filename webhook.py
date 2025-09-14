@@ -1883,6 +1883,7 @@ def generate_plot_png_main(filename: str = "latest_main.png") -> Path:
             dragmode = 'drawline',
             hoverlabel=dict(align='left',bgcolor='rgba(255,255,255,0.5)',font=dict(color='black')),
             legend_traceorder="reversed",
+            showlegend = False,
             font=dict(
             family="Noto Sans TC",   # 全域字型
             size=12,
