@@ -101,6 +101,38 @@ DEFAULT_WHITE_LIST_FILE = Path("whitelist.json")
 WHITE_LIST_FILE.parent.mkdir(parents=True, exist_ok=True)
 IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 
+def _reply_images(reply_token: str, img_urls: list[str]) -> None:
+    """一次回覆最多 5 張，多的請用 push。"""
+    messages = [ImageSendMessage(original_content_url=u, preview_image_url=u) for u in img_urls[:5]]
+    line_bot_api.reply_message(reply_token, messages)
+
+def _push_images_to_user(user_id: str, img_urls: list[str]) -> int:
+    """對單一使用者 push 多張（自動分批，每批最多 5）。"""
+    total = 0
+    for i in range(0, len(img_urls), 5):
+        batch = [ImageSendMessage(original_content_url=u, preview_image_url=u) for u in img_urls[i:i+5]]
+        line_bot_api.push_message(user_id, batch)
+        total += len(batch)
+    return total
+
+def _url_for_file(filename: str) -> str:
+    return f"{_public_base()}/images/{filename}"
+
+def _ensure_latest_png() -> str:
+    """產『即時盤』圖（沿用你現有 generate_plot_png），固定檔名 latest.png"""
+    p = generate_plot_png("latest.png")  # 如果你原本函式叫別名，改這行
+    return _url_for_file(p.name)
+
+def _ensure_main_png() -> str:
+    """產『主圖』圖（你新增的 generate_plot_png_main），固定檔名 main.png"""
+    p = generate_plot_png_main("main.png")
+    return _url_for_file(p.name)
+
+def _ensure_tables_pngs() -> list[str]:
+    """產表格並回傳圖片 URL 陣列（覆蓋固定檔名）"""
+    paths = generate_options_tables()     # 之前我們做的函式，回傳 List[Path]
+    return [_url_for_file(p.name) for p in paths]
+
 def _bootstrap_storage():
     """若掛了磁碟但檔案不存在，且舊檔存在，則把舊檔搬到新位置；否則建立空白檔。"""
     try:
@@ -178,10 +210,10 @@ def _get_cached_sqlite(url: str, cache_path: Path) -> Path:
     _download_to(cache_path, url)
     return cache_path
 
-def get_sqlite_connection(which: str) -> sqlite3.connection:
+def get_sqlite_connection(which: str) -> sqlite3.Connection:
     """
     which: 'equity' 或 'futures'
-    回傳 sqlite3.connect(...) 連線；呼叫方負責 con.close()
+    回傳 sqlite3.connect(...) 連線；呼叫方負責  scon.close()
     """
     if which == "equity":
         p = _get_cached_sqlite(EQUITY_SQLITE_URL, EQUITY_SQLITE_CACHE)
